@@ -140,6 +140,7 @@
     <ClCompile Include="contract_rl.cpp" />
     <ClCompile Include="contract_ccf.cpp" />
     <ClCompile Include="contract_qip.cpp" />
+    <ClCompile Include="contract_qsb.cpp" />
     <ClCompile Include="custom_mining.cpp" />
     <ClCompile Include="file_io.cpp" />
     <ClCompile Include="qpi_collection.cpp" />

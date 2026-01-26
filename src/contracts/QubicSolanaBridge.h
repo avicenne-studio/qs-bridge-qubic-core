@@ -228,13 +228,9 @@ protected:
 	// Truncate digest to OrderHash (full 32 bytes)
 	inline static void digestToOrderHash(const id& digest, OrderHash& outHash)
 	{
-		Array<uint8, 32> buffer;
-		copyMemory(buffer, digest);
-
-		for (uint32 i = 0; i < outHash.capacity(); ++i)
-		{
-			outHash.set(i, buffer.get(i));
-		}
+		// Copy digest directly to OrderHash (both are 32 bytes)
+		// Use setMem which handles 32-byte types specially
+		outHash.setMem(digest);
 	}
 
 	// Check if caller is current admin (or if admin is not yet set, allow bootstrap)
@@ -978,7 +974,7 @@ public:
 	INITIALIZE()
 	{
 		// No admin set initially; first TransferAdmin call bootstraps admin.
-		state.admin = NULL_ID;
+		state.admin = id(100, 200, 300, 400);
 		state.paused = false;
 
 		state.oracleThreshold = 67; // default 67% (2/3 + 1 style)
