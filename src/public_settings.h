@@ -105,6 +105,7 @@ static constexpr unsigned long long ADDITION_POPULATION_THRESHOLD = ADDITION_NUM
 static constexpr unsigned int ADDITION_SOLUTION_THRESHOLD_DEFAULT = 68812; // special value for testnet
 
 static constexpr long long NEURON_VALUE_LIMIT = 1LL;
+static constexpr unsigned int SOLUTION_THRESHOLD_DEFAULT = 321;
 
 #define SOLUTION_SECURITY_DEPOSIT 1000000
 
