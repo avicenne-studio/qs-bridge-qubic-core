@@ -9,6 +9,39 @@ static constexpr uint32 QSB_MAX_PAUSERS = 32;
 static constexpr uint32 QSB_MAX_FILLED_ORDERS = 2048;
 static constexpr uint32 QSB_MAX_LOCKED_ORDERS = 1024;
 
+// Log types for QSB contract (no enums allowed in contracts)
+static const uint32 QSBLogLock = 1;
+static const uint32 QSBLogOverrideLock = 2;
+static const uint32 QSBLogUnlock = 3;
+static const uint32 QSBLogPaused = 4;
+static const uint32 QSBLogUnpaused = 5;
+static const uint32 QSBLogAdminTransferred = 6;
+static const uint32 QSBLogThresholdUpdated = 7;
+static const uint32 QSBLogRoleGranted = 8;
+static const uint32 QSBLogRoleRevoked = 9;
+static const uint32 QSBLogFeeParametersUpdated = 10;
+
+// Generic reason codes for logging
+static const uint8 QSBReasonNone = 0;
+static const uint8 QSBReasonPaused = 1;
+static const uint8 QSBReasonInvalidAmount = 2;
+static const uint8 QSBReasonInsufficientReward = 3;
+static const uint8 QSBReasonNonceUsed = 4;
+static const uint8 QSBReasonNoSpace = 5;
+static const uint8 QSBReasonNotSender = 6;
+static const uint8 QSBReasonBadRelayerFee = 7;
+static const uint8 QSBReasonNoOracles = 8;
+static const uint8 QSBReasonThresholdFailed = 9;
+static const uint8 QSBReasonAlreadyFilled = 10;
+static const uint8 QSBReasonInvalidSignature = 11;
+static const uint8 QSBReasonDuplicateSigner = 12;
+static const uint8 QSBReasonNotAdmin = 13;
+static const uint8 QSBReasonNotAdminOrPauser = 14;
+static const uint8 QSBReasonInvalidThreshold = 15;
+static const uint8 QSBReasonRoleExists = 16;
+static const uint8 QSBReasonRoleMissing = 17;
+static const uint8 QSBReasonInvalidFeeParams = 18;
+
 struct QSB2
 {
 };
@@ -77,6 +110,110 @@ public:
 		Array<uint8, 64> toAddress;
 		OrderHash orderHash;
 		bit active;
+	};
+
+	// Logging messages
+	struct QSBLogLockMessage
+	{
+		uint32 _contractIndex;
+		uint32 _type;
+		id from;
+		Array<uint8, 32> to;
+		uint64 amount;
+		uint64 relayerFee;
+		uint32 networkOut;
+		uint32 nonce;
+		OrderHash orderHash;
+		uint8 success;
+		uint8 reasonCode;
+		sint8 _terminator;
+	};
+
+	struct QSBLogOverrideLockMessage
+	{
+		uint32 _contractIndex;
+		uint32 _type;
+		id from;
+		Array<uint8, 32> to;
+		uint64 amount;
+		uint64 relayerFee;
+		uint32 networkOut;
+		uint32 nonce;
+		OrderHash orderHash;
+		uint8 success;
+		uint8 reasonCode;
+		sint8 _terminator;
+	};
+
+	struct QSBLogUnlockMessage
+	{
+		uint32 _contractIndex;
+		uint32 _type;
+		OrderHash orderHash;
+		id toAddress;
+		uint64 amount;
+		uint64 relayerFee;
+		id relayer;
+		uint8 success;
+		uint8 reasonCode;
+		sint8 _terminator;
+	};
+
+	struct QSBLogAdminTransferredMessage
+	{
+		uint32 _contractIndex;
+		uint32 _type;
+		id previousAdmin;
+		id newAdmin;
+		uint8 success;
+		uint8 reasonCode;
+		sint8 _terminator;
+	};
+
+	struct QSBLogThresholdUpdatedMessage
+	{
+		uint32 _contractIndex;
+		uint32 _type;
+		uint8 oldThreshold;
+		uint8 newThreshold;
+		uint8 success;
+		uint8 reasonCode;
+		sint8 _terminator;
+	};
+
+	struct QSBLogRoleMessage
+	{
+		uint32 _contractIndex;
+		uint32 _type;
+		uint8 role;
+		id account;
+		id caller;
+		uint8 success;
+		uint8 reasonCode;
+		sint8 _terminator;
+	};
+
+	struct QSBLogPausedMessage
+	{
+		uint32 _contractIndex;
+		uint32 _type;
+		id caller;
+		uint8 success;
+		uint8 reasonCode;
+		sint8 _terminator;
+	};
+
+	struct QSBLogFeeParametersUpdatedMessage
+	{
+		uint32 _contractIndex;
+		uint32 _type;
+		uint32 bpsFee;
+		uint32 protocolFee;
+		id protocolFeeRecipient;
+		id oracleFeeRecipient;
+		uint8 success;
+		uint8 reasonCode;
+		sint8 _terminator;
 	};
 
 	// ---------------------------------------------------------------------
@@ -200,6 +337,67 @@ public:
 	struct EditFeeParameters_output
 	{
 		bit success;
+	};
+
+	// ---------------------------------------------------------------------
+	// View / frontend helper functions
+	// ---------------------------------------------------------------------
+
+	struct GetConfig_input
+	{
+	};
+
+	struct GetConfig_output
+	{
+		id admin;
+		id protocolFeeRecipient;
+		id oracleFeeRecipient;
+		uint32 bpsFee;
+		uint32 protocolFee;
+		uint32 oracleCount;
+		uint8 oracleThreshold;
+		bit paused;
+	};
+
+	struct IsOracle_input
+	{
+		id account;
+	};
+
+	struct IsOracle_output
+	{
+		bit isOracle;
+	};
+
+	struct IsPauser_input
+	{
+		id account;
+	};
+
+	struct IsPauser_output
+	{
+		bit isPauser;
+	};
+
+	struct GetLockedOrder_input
+	{
+		uint32 nonce;
+	};
+
+	struct GetLockedOrder_output
+	{
+		bit exists;
+		LockedOrderEntry order;
+	};
+
+	struct IsOrderFilled_input
+	{
+		OrderHash hash;
+	};
+
+	struct IsOrderFilled_output
+	{
+		bit filled;
 	};
 
 protected:
@@ -365,10 +563,24 @@ public:
 		Order tmpOrder;
 		LockedOrderEntry entry;
 		uint32 freeIdx, i;
+		QSBLogLockMessage logMsg;
 	};
 
 	PUBLIC_PROCEDURE_WITH_LOCALS(Lock)
 	{
+		locals.logMsg._contractIndex = SELF_INDEX;
+		locals.logMsg._type = QSBLogLock;
+		locals.logMsg.from = qpi.invocator();
+		copyFromBuffer(locals.logMsg.to, input.toAddress);
+		locals.logMsg.amount = input.amount;
+		locals.logMsg.relayerFee = input.relayerFee;
+		locals.logMsg.networkOut = input.networkOut;
+		locals.logMsg.nonce = input.nonce;
+		setMemory(locals.logMsg.orderHash, 0);
+		locals.logMsg.success = 0;
+		locals.logMsg.reasonCode = QSBReasonNone;
+		locals.logMsg._terminator = 0;
+
 		output.success = false;
 		setMemory(output.orderHash, 0);
 
@@ -380,6 +592,8 @@ public:
 			{
 				qpi.transfer(qpi.invocator(), qpi.invocationReward());
 			}
+			locals.logMsg.reasonCode = QSBReasonPaused;
+			LOG_INFO(locals.logMsg);
 			return;
 		}
 
@@ -390,6 +604,8 @@ public:
 			{
 				qpi.transfer(qpi.invocator(), qpi.invocationReward());
 			}
+			locals.logMsg.reasonCode = QSBReasonInvalidAmount;
+			LOG_INFO(locals.logMsg);
 			return;
 		}
 
@@ -400,6 +616,8 @@ public:
 			{
 				qpi.transfer(qpi.invocator(), qpi.invocationReward());
 			}
+			locals.logMsg.reasonCode = QSBReasonInsufficientReward;
+			LOG_INFO(locals.logMsg);
 			return;
 		}
 
@@ -416,6 +634,8 @@ public:
 		{
 			// Nonce already used; reject
 			qpi.transfer(qpi.invocator(), input.amount);
+			locals.logMsg.reasonCode = QSBReasonNonceUsed;
+			LOG_INFO(locals.logMsg);
 			return;
 		}
 
@@ -435,6 +655,8 @@ public:
 		{
 			// No space left to track orders, refund and abort
 			qpi.transfer(qpi.invocator(), input.amount);
+			locals.logMsg.reasonCode = QSBReasonNoSpace;
+			LOG_INFO(locals.logMsg);
 			return;
 		}
 
@@ -452,6 +674,7 @@ public:
 
 		locals.digest = qpi.K12(locals.tmpOrder);
 		digestToOrderHash(locals.digest, output.orderHash);
+		locals.logMsg.orderHash = output.orderHash;
 
 		// Persist locked order so that overrideLock can modify it
 		locals.entry.active = true;
@@ -465,6 +688,9 @@ public:
 		state.lockedOrders.set((uint32)locals.freeIdx, locals.entry);
 
 		output.success = true;
+		locals.logMsg.success = 1;
+		locals.logMsg.reasonCode = QSBReasonNone;
+		LOG_INFO(locals.logMsg);
 	}
 
 	struct OverrideLock_locals
@@ -473,10 +699,23 @@ public:
 		Order tmpOrder;
 		id digest;
 		sint32 idx;
+		QSBLogOverrideLockMessage logMsg;
 	};
 
 	PUBLIC_PROCEDURE_WITH_LOCALS(OverrideLock)
 	{
+		locals.logMsg._contractIndex = SELF_INDEX;
+		locals.logMsg._type = QSBLogOverrideLock;
+		locals.logMsg.from = qpi.invocator();
+		setMemory(locals.logMsg.to, 0);
+		locals.logMsg.amount = 0;
+		locals.logMsg.relayerFee = 0;
+		locals.logMsg.networkOut = 0;
+		locals.logMsg.nonce = input.nonce;
+		setMemory(locals.logMsg.orderHash, 0);
+		locals.logMsg.success = 0;
+		locals.logMsg.reasonCode = QSBReasonNone;
+		locals.logMsg._terminator = 0;
 		output.success = false;
 		setMemory(output.orderHash, 0);
 
@@ -489,6 +728,8 @@ public:
 		// Contract must not be paused
 		if (state.paused)
 		{
+			locals.logMsg.reasonCode = QSBReasonPaused;
+			LOG_INFO(locals.logMsg);
 			return;
 		}
 
@@ -496,6 +737,8 @@ public:
 		locals.idx = findLockedOrderIndexByNonce(state, input.nonce, 0);
 		if (locals.idx == NULL_INDEX)
 		{
+			locals.logMsg.reasonCode = QSBReasonNonceUsed;
+			LOG_INFO(locals.logMsg);
 			return;
 		}
 
@@ -504,12 +747,16 @@ public:
 		// Only original sender can override
 		if (locals.entry.sender != qpi.invocator())
 		{
+			locals.logMsg.reasonCode = QSBReasonNotSender;
+			LOG_INFO(locals.logMsg);
 			return;
 		}
 
 		// Validate new relayer fee
 		if (input.relayerFee >= locals.entry.amount)
 		{
+			locals.logMsg.reasonCode = QSBReasonBadRelayerFee;
+			LOG_INFO(locals.logMsg);
 			return;
 		}
 
@@ -532,11 +779,67 @@ public:
 		locals.digest = qpi.K12(locals.tmpOrder);
 		digestToOrderHash(locals.digest, locals.entry.orderHash);
 		output.orderHash = locals.entry.orderHash;
+		locals.logMsg.orderHash = locals.entry.orderHash;
 
 		state.lockedOrders.set((uint32)locals.idx, locals.entry);
 		output.success = true;
+		copyFromBuffer(locals.logMsg.to, input.toAddress);
+		locals.logMsg.amount = locals.entry.amount;
+		locals.logMsg.relayerFee = locals.entry.relayerFee;
+		locals.logMsg.networkOut = locals.entry.networkOut;
+		locals.logMsg.success = 1;
+		locals.logMsg.reasonCode = QSBReasonNone;
+		LOG_INFO(locals.logMsg);
 	}
 
+	// View helpers
+	PUBLIC_FUNCTION(GetConfig)
+	{
+		output.admin = state.admin;
+		output.protocolFeeRecipient = state.protocolFeeRecipient;
+		output.oracleFeeRecipient = state.oracleFeeRecipient;
+		output.bpsFee = state.bpsFee;
+		output.protocolFee = state.protocolFee;
+		output.oracleCount = state.oracleCount;
+		output.oracleThreshold = state.oracleThreshold;
+		output.paused = state.paused;
+	}
+
+	PUBLIC_FUNCTION(IsOracle)
+	{
+		output.isOracle = (findOracleIndex(state, input.account, 0) != NULL_INDEX);
+	}
+
+	PUBLIC_FUNCTION(IsPauser)
+	{
+		output.isPauser = (findPauserIndex(state, input.account, 0) != NULL_INDEX);
+	}
+
+	struct GetLockedOrder_locals
+	{
+		sint32 idx;
+	};
+
+	PUBLIC_FUNCTION_WITH_LOCALS(GetLockedOrder)
+	{
+		locals.idx = findLockedOrderIndexByNonce(state, input.nonce, 0);
+		output.exists = (locals.idx != NULL_INDEX);
+		if (output.exists)
+		{
+			output.order = state.lockedOrders.get((uint32)locals.idx);
+		}
+	}
+
+	struct IsOrderFilled_locals
+	{
+		FilledOrderEntry entry;
+		bool same;
+	};
+
+	PUBLIC_FUNCTION_WITH_LOCALS(IsOrderFilled)
+	{
+		output.filled = isOrderFilled(state, input.hash, 0, 0, locals.same, locals.entry);
+	}
 	struct Unlock_locals
 	{
 		id digest;
@@ -557,10 +860,21 @@ public:
 		uint64 oracleFeeAmount;
 		uint64 recipientAmount;
 		bool same;
+		QSBLogUnlockMessage logMsg;
 	};
 
 	PUBLIC_PROCEDURE_WITH_LOCALS(Unlock)
-	{
+	{	
+		locals.logMsg._contractIndex = SELF_INDEX;
+		locals.logMsg._type = QSBLogUnlock;
+		setMemory(locals.logMsg.orderHash, 0);
+		locals.logMsg.toAddress = input.order.toAddress;
+		locals.logMsg.amount = input.order.amount;
+		locals.logMsg.relayerFee = input.order.relayerFee;
+		locals.logMsg.relayer = qpi.invocator();
+		locals.logMsg.success = 0;
+		locals.logMsg.reasonCode = QSBReasonNone;
+		locals.logMsg._terminator = 0;
 		output.success = false;
 		setMemory(output.orderHash, 0);
 
@@ -571,6 +885,8 @@ public:
 			{
 				qpi.transfer(qpi.invocator(), qpi.invocationReward());
 			}
+			locals.logMsg.reasonCode = QSBReasonPaused;
+			LOG_INFO(locals.logMsg);
 			return;
 		}
 
@@ -583,6 +899,8 @@ public:
 		// Basic order validation
 		if (input.order.amount == 0 || input.order.relayerFee >= input.order.amount)
 		{
+			locals.logMsg.reasonCode = QSBReasonInvalidAmount;
+			LOG_INFO(locals.logMsg);
 			return;
 		}
 
@@ -590,16 +908,21 @@ public:
 		locals.digest = qpi.K12(input.order);
 		digestToOrderHash(locals.digest, locals.hash);
 		output.orderHash = locals.hash;
+		locals.logMsg.orderHash = locals.hash;
 
 		// Ensure orderHash not yet filled
 		if (isOrderFilled(state, locals.hash, 0, 0, 0, locals.entry))
 		{
+			locals.logMsg.reasonCode = QSBReasonAlreadyFilled;
+			LOG_INFO(locals.logMsg);
 			return;
 		}
 
 		// Verify oracle signatures against threshold
 		if (state.oracleCount == 0 || input.numSignatures == 0)
 		{
+			locals.logMsg.reasonCode = QSBReasonNoOracles;
+			LOG_INFO(locals.logMsg);
 			return;
 		}
 
@@ -625,18 +948,28 @@ public:
 
 			// Check signer is authorized oracle
 			if (findOracleIndex(state, locals.sig.signer, 0) == NULL_INDEX)
-				return; // unknown signer -> fail fast
+			{
+				locals.logMsg.reasonCode = QSBReasonInvalidSignature;
+				LOG_INFO(locals.logMsg); // unknown signer -> fail fast
+				return;
+			}
 
 			// Check duplicates
 			for (locals.j = 0; locals.j < locals.seenCount; ++locals.j)
 			{
 				if (locals.seenSigners.get(locals.j) == locals.sig.signer)
-					return; // duplicate signer -> fail
+				{
+					locals.logMsg.reasonCode = QSBReasonDuplicateSigner;
+					LOG_INFO(locals.logMsg); // duplicate signer -> fail
+					return;
+				}
 			}
 
 			// Verify signature
 			if (!qpi.signatureValidity(locals.sig.signer, locals.digest, locals.sig.signature))
 			{
+				locals.logMsg.reasonCode = QSBReasonInvalidSignature;
+				LOG_INFO(locals.logMsg);
 				return;
 			}
 
@@ -651,6 +984,8 @@ public:
 
 		if (locals.validSignatureCount < locals.requiredSignatures)
 		{
+			locals.logMsg.reasonCode = QSBReasonThresholdFailed;
+			LOG_INFO(locals.logMsg);
 			return;
 		}
 
@@ -712,14 +1047,30 @@ public:
 		// Mark order as filled
 		markOrderFilled(state, locals.hash, 0, 0, 0, locals.entry);
 		output.success = true;
+		locals.logMsg.success = 1;
+		locals.logMsg.reasonCode = QSBReasonNone;
+		LOG_INFO(locals.logMsg);
 	}
 
 	// ---------------------------------------------------------------------
 	// Admin procedures
 	// ---------------------------------------------------------------------
 
-	PUBLIC_PROCEDURE(TransferAdmin)
+	struct TransferAdmin_locals
 	{
+		QSBLogAdminTransferredMessage logMsg;
+	};
+
+	PUBLIC_PROCEDURE_WITH_LOCALS(TransferAdmin)
+	{
+		locals.logMsg._contractIndex = SELF_INDEX;
+		locals.logMsg._type = QSBLogAdminTransferred;
+		locals.logMsg.previousAdmin = state.admin;
+		locals.logMsg.newAdmin = input.newAdmin;
+		locals.logMsg.success = 0;
+		locals.logMsg.reasonCode = QSBReasonNone;
+		locals.logMsg._terminator = 0;
+
 		output.success = false;
 
 		// Refund any attached funds
@@ -730,14 +1081,23 @@ public:
 
 		if (!isAdmin(state, qpi.invocator()))
 		{
+			locals.logMsg.reasonCode = QSBReasonNotAdmin;
+			LOG_INFO(locals.logMsg);
 			return;
 		}
 
 		state.admin = input.newAdmin;
 		output.success = true;
+		locals.logMsg.success = 1;
+		LOG_INFO(locals.logMsg);
 	}
 
-	PUBLIC_PROCEDURE(EditOracleThreshold)
+	struct EditOracleThreshold_locals
+	{
+		QSBLogThresholdUpdatedMessage logMsg;
+	};
+
+	PUBLIC_PROCEDURE_WITH_LOCALS(EditOracleThreshold)
 	{
 		output.success = false;
 		output.oldThreshold = state.oracleThreshold;
@@ -749,22 +1109,47 @@ public:
 
 		if (!isAdmin(state, qpi.invocator()))
 		{
+			locals.logMsg._contractIndex = SELF_INDEX;
+			locals.logMsg._type = QSBLogThresholdUpdated;
+			locals.logMsg.oldThreshold = output.oldThreshold;
+			locals.logMsg.newThreshold = input.newThreshold;
+			locals.logMsg.success = 0;
+			locals.logMsg.reasonCode = QSBReasonNotAdmin;
+			locals.logMsg._terminator = 0;
+			LOG_INFO(locals.logMsg);
 			return;
 		}
 
 		if (input.newThreshold == 0 || input.newThreshold > 100)
 		{
+			locals.logMsg._contractIndex = SELF_INDEX;
+			locals.logMsg._type = QSBLogThresholdUpdated;
+			locals.logMsg.oldThreshold = output.oldThreshold;
+			locals.logMsg.newThreshold = input.newThreshold;
+			locals.logMsg.success = 0;
+			locals.logMsg.reasonCode = QSBReasonInvalidThreshold;
+			locals.logMsg._terminator = 0;
+			LOG_INFO(locals.logMsg);
 			return;
 		}
 
 		state.oracleThreshold  = input.newThreshold;
 		output.success   = true;
+		locals.logMsg._contractIndex = SELF_INDEX;
+		locals.logMsg._type = QSBLogThresholdUpdated;
+		locals.logMsg.oldThreshold = output.oldThreshold;
+		locals.logMsg.newThreshold = input.newThreshold;
+		locals.logMsg.success = 1;
+		locals.logMsg.reasonCode = QSBReasonNone;
+		locals.logMsg._terminator = 0;
+		LOG_INFO(locals.logMsg);
 	}
 
 	struct AddRole_locals
 	{
 		RoleEntry entry;
 		uint32 i;
+		QSBLogRoleMessage logMsg;
 	};
 
 	PUBLIC_PROCEDURE_WITH_LOCALS(AddRole)
@@ -778,6 +1163,15 @@ public:
 
 		if (!isAdmin(state, qpi.invocator()))
 		{
+			locals.logMsg._contractIndex = SELF_INDEX;
+			locals.logMsg._type = QSBLogRoleGranted;
+			locals.logMsg.role = input.role;
+			locals.logMsg.account = input.account;
+			locals.logMsg.caller = qpi.invocator();
+			locals.logMsg.success = 0;
+			locals.logMsg.reasonCode = QSBReasonNotAdmin;
+			locals.logMsg._terminator = 0;
+			LOG_INFO(locals.logMsg);
 			return;
 		}
 
@@ -786,6 +1180,15 @@ public:
 			if (findOracleIndex(state, input.account, 0) != NULL_INDEX)
 			{
 				output.success = true;
+				locals.logMsg._contractIndex = SELF_INDEX;
+				locals.logMsg._type = QSBLogRoleGranted;
+				locals.logMsg.role = input.role;
+				locals.logMsg.account = input.account;
+				locals.logMsg.caller = qpi.invocator();
+				locals.logMsg.success = 0;
+				locals.logMsg.reasonCode = QSBReasonRoleExists;
+				locals.logMsg._terminator = 0;
+				LOG_INFO(locals.logMsg);
 				return;
 			}
 
@@ -799,6 +1202,15 @@ public:
 					state.oracles.set(locals.i, locals.entry);
 					++state.oracleCount;
 					output.success = true;
+					locals.logMsg._contractIndex = SELF_INDEX;
+					locals.logMsg._type = QSBLogRoleGranted;
+					locals.logMsg.role = input.role;
+					locals.logMsg.account = input.account;
+					locals.logMsg.caller = qpi.invocator();
+					locals.logMsg.success = 1;
+					locals.logMsg.reasonCode = QSBReasonNone;
+					locals.logMsg._terminator = 0;
+					LOG_INFO(locals.logMsg);
 					return;
 				}
 			}
@@ -808,6 +1220,15 @@ public:
 			if (findPauserIndex(state, input.account, 0) != NULL_INDEX)
 			{
 				output.success = true;
+				locals.logMsg._contractIndex = SELF_INDEX;
+				locals.logMsg._type = QSBLogRoleGranted;
+				locals.logMsg.role = input.role;
+				locals.logMsg.account = input.account;
+				locals.logMsg.caller = qpi.invocator();
+				locals.logMsg.success = 0;
+				locals.logMsg.reasonCode = QSBReasonRoleExists;
+				locals.logMsg._terminator = 0;
+				LOG_INFO(locals.logMsg);
 				return;
 			}
 
@@ -820,6 +1241,15 @@ public:
 					locals.entry.active  = true;
 					state.pausers.set(locals.i, locals.entry);
 					output.success = true;
+					locals.logMsg._contractIndex = SELF_INDEX;
+					locals.logMsg._type = QSBLogRoleGranted;
+					locals.logMsg.role = input.role;
+					locals.logMsg.account = input.account;
+					locals.logMsg.caller = qpi.invocator();
+					locals.logMsg.success = 1;
+					locals.logMsg.reasonCode = QSBReasonNone;
+					locals.logMsg._terminator = 0;
+					LOG_INFO(locals.logMsg);
 					return;
 				}
 			}
@@ -830,6 +1260,7 @@ public:
 	{
 		RoleEntry entry;
 		sint32 idx;
+		QSBLogRoleMessage logMsg;
 	};
 
 	PUBLIC_PROCEDURE_WITH_LOCALS(RemoveRole)
@@ -843,6 +1274,15 @@ public:
 
 		if (!isAdmin(state, qpi.invocator()))
 		{
+			locals.logMsg._contractIndex = SELF_INDEX;
+			locals.logMsg._type = QSBLogRoleRevoked;
+			locals.logMsg.role = input.role;
+			locals.logMsg.account = input.account;
+			locals.logMsg.caller = qpi.invocator();
+			locals.logMsg.success = 0;
+			locals.logMsg.reasonCode = QSBReasonNotAdmin;
+			locals.logMsg._terminator = 0;
+			LOG_INFO(locals.logMsg);
 			return;
 		}
 
@@ -857,6 +1297,28 @@ public:
 				if (state.oracleCount > 0)
 					--state.oracleCount;
 				output.success = true;
+
+				locals.logMsg._contractIndex = SELF_INDEX;
+				locals.logMsg._type = QSBLogRoleRevoked;
+				locals.logMsg.role = input.role;
+				locals.logMsg.account = input.account;
+				locals.logMsg.caller = qpi.invocator();
+				locals.logMsg.success = 1;
+				locals.logMsg.reasonCode = QSBReasonNone;
+				locals.logMsg._terminator = 0;
+				LOG_INFO(locals.logMsg);
+			}
+			else
+			{
+				locals.logMsg._contractIndex = SELF_INDEX;
+				locals.logMsg._type = QSBLogRoleRevoked;
+				locals.logMsg.role = input.role;
+				locals.logMsg.account = input.account;
+				locals.logMsg.caller = qpi.invocator();
+				locals.logMsg.success = 0;
+				locals.logMsg.reasonCode = QSBReasonRoleMissing;
+				locals.logMsg._terminator = 0;
+				LOG_INFO(locals.logMsg);
 			}
 		}
 		else if (input.role == (uint8)Role::Pauser)
@@ -868,11 +1330,38 @@ public:
 				locals.entry.active = false;
 				state.pausers.set((uint32)locals.idx, locals.entry);
 				output.success = true;
+
+				locals.logMsg._contractIndex = SELF_INDEX;
+				locals.logMsg._type = QSBLogRoleRevoked;
+				locals.logMsg.role = input.role;
+				locals.logMsg.account = input.account;
+				locals.logMsg.caller = qpi.invocator();
+				locals.logMsg.success = 1;
+				locals.logMsg.reasonCode = QSBReasonNone;
+				locals.logMsg._terminator = 0;
+				LOG_INFO(locals.logMsg);
+			}
+			else
+			{
+				locals.logMsg._contractIndex = SELF_INDEX;
+				locals.logMsg._type = QSBLogRoleRevoked;
+				locals.logMsg.role = input.role;
+				locals.logMsg.account = input.account;
+				locals.logMsg.caller = qpi.invocator();
+				locals.logMsg.success = 0;
+				locals.logMsg.reasonCode = QSBReasonRoleMissing;
+				locals.logMsg._terminator = 0;
+				LOG_INFO(locals.logMsg);
 			}
 		}
 	}
 
-	PUBLIC_PROCEDURE(Pause)
+	struct Pause_locals
+	{
+		QSBLogPausedMessage logMsg;
+	};
+
+	PUBLIC_PROCEDURE_WITH_LOCALS(Pause)
 	{
 		output.success = false;
 
@@ -883,14 +1372,34 @@ public:
 
 		if (!isAdminOrPauser(state, qpi.invocator(), 0))
 		{
+			locals.logMsg._contractIndex = SELF_INDEX;
+			locals.logMsg._type = QSBLogPaused;
+			locals.logMsg.caller = qpi.invocator();
+			locals.logMsg.success = 0;
+			locals.logMsg.reasonCode = QSBReasonNotAdminOrPauser;
+			locals.logMsg._terminator = 0;
+			LOG_INFO(locals.logMsg);
 			return;
 		}
 
 		state.paused = true;
 		output.success = true;
+
+		locals.logMsg._contractIndex = SELF_INDEX;
+		locals.logMsg._type = QSBLogPaused;
+		locals.logMsg.caller = qpi.invocator();
+		locals.logMsg.success = 1;
+		locals.logMsg.reasonCode = QSBReasonNone;
+		locals.logMsg._terminator = 0;
+		LOG_INFO(locals.logMsg);
 	}
 
-	PUBLIC_PROCEDURE(Unpause)
+	struct Unpause_locals
+	{
+		QSBLogPausedMessage logMsg;
+	};
+
+	PUBLIC_PROCEDURE_WITH_LOCALS(Unpause)
 	{
 		output.success = false;
 
@@ -901,14 +1410,34 @@ public:
 
 		if (!isAdminOrPauser(state, qpi.invocator(), 0))
 		{
+			locals.logMsg._contractIndex = SELF_INDEX;
+			locals.logMsg._type = QSBLogUnpaused;
+			locals.logMsg.caller = qpi.invocator();
+			locals.logMsg.success = 0;
+			locals.logMsg.reasonCode = QSBReasonNotAdminOrPauser;
+			locals.logMsg._terminator = 0;
+			LOG_INFO(locals.logMsg);
 			return;
 		}
 
 		state.paused = false;
 		output.success = true;
+
+		locals.logMsg._contractIndex = SELF_INDEX;
+		locals.logMsg._type = QSBLogUnpaused;
+		locals.logMsg.caller = qpi.invocator();
+		locals.logMsg.success = 1;
+		locals.logMsg.reasonCode = QSBReasonNone;
+		locals.logMsg._terminator = 0;
+		LOG_INFO(locals.logMsg);
 	}
 
-	PUBLIC_PROCEDURE(EditFeeParameters)
+	struct EditFeeParameters_locals
+	{
+		QSBLogFeeParametersUpdatedMessage logMsg;
+	};
+
+	PUBLIC_PROCEDURE_WITH_LOCALS(EditFeeParameters)
 	{
 		output.success = false;
 
@@ -919,6 +1448,16 @@ public:
 
 		if (!isAdmin(state, qpi.invocator()))
 		{
+			locals.logMsg._contractIndex = SELF_INDEX;
+			locals.logMsg._type = QSBLogFeeParametersUpdated;
+			locals.logMsg.bpsFee = state.bpsFee;
+			locals.logMsg.protocolFee = state.protocolFee;
+			locals.logMsg.protocolFeeRecipient = state.protocolFeeRecipient;
+			locals.logMsg.oracleFeeRecipient = state.oracleFeeRecipient;
+			locals.logMsg.success = 0;
+			locals.logMsg.reasonCode = QSBReasonNotAdmin;
+			locals.logMsg._terminator = 0;
+			LOG_INFO(locals.logMsg);
 			return;
 		}
 
@@ -944,10 +1483,28 @@ public:
 		}
 
 		output.success = true;
+
+		locals.logMsg._contractIndex = SELF_INDEX;
+		locals.logMsg._type = QSBLogFeeParametersUpdated;
+		locals.logMsg.bpsFee = state.bpsFee;
+		locals.logMsg.protocolFee = state.protocolFee;
+		locals.logMsg.protocolFeeRecipient = state.protocolFeeRecipient;
+		locals.logMsg.oracleFeeRecipient = state.oracleFeeRecipient;
+		locals.logMsg.success = 1;
+		locals.logMsg.reasonCode = QSBReasonNone;
+		locals.logMsg._terminator = 0;
+		LOG_INFO(locals.logMsg);
 	}
 
 	REGISTER_USER_FUNCTIONS_AND_PROCEDURES()
 	{
+		// View functions
+		REGISTER_USER_FUNCTION(GetConfig, 1);
+		REGISTER_USER_FUNCTION(IsOracle, 2);
+		REGISTER_USER_FUNCTION(IsPauser, 3);
+		REGISTER_USER_FUNCTION(GetLockedOrder, 4);
+		REGISTER_USER_FUNCTION(IsOrderFilled, 5);
+
 		// User procedures
 		REGISTER_USER_PROCEDURE(Lock, 1);
 		REGISTER_USER_PROCEDURE(OverrideLock, 2);
