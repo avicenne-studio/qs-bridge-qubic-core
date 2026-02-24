@@ -139,7 +139,7 @@ public:
         input.relayerFee = relayerFee;
         input.networkOut = networkOut;
         input.nonce = nonce;
-        // copyMemory(input.toAddress, toAddress);
+        copyToBuffer(input.toAddress, toAddress, true);
         
         invokeUserProcedure(QSB_CONTRACT_INDEX, 1, input, output, user, energyAmount);
         return output;
@@ -152,7 +152,7 @@ public:
         
         input.nonce = nonce;
         input.relayerFee = relayerFee;
-        // copyMemory(input.toAddress, toAddress);
+        copyToBuffer(input.toAddress, toAddress, true);
         
         invokeUserProcedure(QSB_CONTRACT_INDEX, 2, input, output, user, 0);
         return output;
@@ -165,7 +165,7 @@ public:
         
         input.order = order;
         input.numSignatures = numSignatures;
-        // copyMemory(input.signatures, signatures);
+        copyMemory(input.signatures, signatures);
         
         invokeUserProcedure(QSB_CONTRACT_INDEX, 3, input, output, user, 0);
         return output;
@@ -257,7 +257,188 @@ public:
         invokeUserProcedure(QSB_CONTRACT_INDEX, 16, input, output, user, 0);
         return output;
     }
+
+    // ============================================================================
+    // View / helper function wrappers (GetConfig, IsOracle, IsPauser, GetLockedOrder, IsOrderFilled)
+    // ============================================================================
+
+    QSB::GetConfig_output getConfig() const
+    {
+        QSB::GetConfig_input input;
+        QSB::GetConfig_output output;
+        callFunction(QSB_CONTRACT_INDEX, 1, input, output);
+        return output;
+    }
+
+    QSB::IsOracle_output isOracle(const id& account) const
+    {
+        QSB::IsOracle_input input;
+        QSB::IsOracle_output output;
+        input.account = account;
+        callFunction(QSB_CONTRACT_INDEX, 2, input, output);
+        return output;
+    }
+
+    QSB::IsPauser_output isPauser(const id& account) const
+    {
+        QSB::IsPauser_input input;
+        QSB::IsPauser_output output;
+        input.account = account;
+        callFunction(QSB_CONTRACT_INDEX, 3, input, output);
+        return output;
+    }
+
+    QSB::GetLockedOrder_output getLockedOrder(uint32 nonce) const
+    {
+        QSB::GetLockedOrder_input input;
+        QSB::GetLockedOrder_output output;
+        input.nonce = nonce;
+        callFunction(QSB_CONTRACT_INDEX, 4, input, output);
+        return output;
+    }
+
+    QSB::IsOrderFilled_output isOrderFilled(const QSB::OrderHash& hash) const
+    {
+        QSB::IsOrderFilled_input input;
+        QSB::IsOrderFilled_output output;
+        for (uint32 i = 0; i < input.hash.capacity(); ++i)
+            input.hash.set(i, hash.get(i));
+        callFunction(QSB_CONTRACT_INDEX, 5, input, output);
+        return output;
+    }
 };
+
+// ============================================================================
+// View helper function tests (GetConfig, IsOracle, IsPauser, GetLockedOrder, IsOrderFilled)
+// ============================================================================
+
+TEST(ContractTestingQSB, TestGetConfig_ReturnsInitialState)
+{
+    ContractTestingQSB test;
+
+    QSB::GetConfig_output config = test.getConfig();
+
+    EXPECT_EQ(config.admin, ADMIN);
+    EXPECT_EQ(config.protocolFeeRecipient, NULL_ID);
+    EXPECT_EQ(config.oracleFeeRecipient, NULL_ID);
+    EXPECT_EQ(config.bpsFee, 0u);
+    EXPECT_EQ(config.protocolFee, 0u);
+    EXPECT_EQ(config.oracleCount, 0u);
+    EXPECT_EQ(config.oracleThreshold, 67);
+    EXPECT_EQ((bool)config.paused, false);
+}
+
+TEST(ContractTestingQSB, TestGetConfig_ReflectsAdminAndFeeChanges)
+{
+    ContractTestingQSB test;
+
+    increaseEnergy(ADMIN, 1);
+    test.editFeeParameters(ADMIN, 50, 20, PROTOCOL_FEE_RECIPIENT, ORACLE_FEE_RECIPIENT);
+
+    QSB::GetConfig_output config = test.getConfig();
+
+    EXPECT_EQ(config.admin, ADMIN);
+    EXPECT_EQ(config.bpsFee, 50u);
+    EXPECT_EQ(config.protocolFee, 20u);
+    EXPECT_EQ(config.protocolFeeRecipient, PROTOCOL_FEE_RECIPIENT);
+    EXPECT_EQ(config.oracleFeeRecipient, ORACLE_FEE_RECIPIENT);
+}
+
+TEST(ContractTestingQSB, TestIsOracle_ReturnsFalseWhenNotOracle)
+{
+    ContractTestingQSB test;
+
+    QSB::IsOracle_output out = test.isOracle(ORACLE1);
+    EXPECT_FALSE((bool)out.isOracle);
+
+    out = test.isOracle(USER1);
+    EXPECT_FALSE((bool)out.isOracle);
+}
+
+TEST(ContractTestingQSB, TestIsOracle_ReturnsTrueAfterAddRole)
+{
+    ContractTestingQSB test;
+
+    increaseEnergy(ADMIN, 1);
+    increaseEnergy(ORACLE1, 1);
+    test.addRole(ADMIN, (uint8)QSB::Role::Oracle, ORACLE1);
+
+    QSB::IsOracle_output out = test.isOracle(ORACLE1);
+    EXPECT_TRUE((bool)out.isOracle);
+
+    out = test.isOracle(ORACLE2);
+    EXPECT_FALSE((bool)out.isOracle);
+}
+
+TEST(ContractTestingQSB, TestIsPauser_ReturnsFalseWhenNotPauser)
+{
+    ContractTestingQSB test;
+
+    increaseEnergy(ADMIN, 1);
+    increaseEnergy(PAUSER1, 1);
+    test.addRole(ADMIN, (uint8)QSB::Role::Pauser, PAUSER1);
+
+    QSB::IsPauser_output out = test.isPauser(PAUSER1);
+    EXPECT_TRUE((bool)out.isPauser);
+
+    out = test.isPauser(ORACLE1);
+    EXPECT_FALSE((bool)out.isPauser);
+}
+
+TEST(ContractTestingQSB, TestIsPauser_ReturnsTrueAfterAddRole)
+{
+    ContractTestingQSB test;
+
+    increaseEnergy(ADMIN, 1);
+    increaseEnergy(PAUSER1, 1);
+    test.addRole(ADMIN, (uint8)QSB::Role::Pauser, PAUSER1);
+
+    QSB::IsPauser_output out = test.isPauser(PAUSER1);
+    EXPECT_TRUE((bool)out.isPauser);
+
+    out = test.isPauser(USER1);
+    EXPECT_FALSE((bool)out.isPauser);
+}
+
+TEST(ContractTestingQSB, TestGetLockedOrder_ReturnsNotExistsForUnknownNonce)
+{
+    ContractTestingQSB test;
+
+    QSB::GetLockedOrder_output out = test.getLockedOrder(999);
+    EXPECT_FALSE((bool)out.exists);
+}
+
+TEST(ContractTestingQSB, TestGetLockedOrder_ReturnsOrderAfterLock)
+{
+    ContractTestingQSB test;
+
+    const uint64 amount = 1000000;
+    const uint64 relayerFee = 10000;
+    const uint32 nonce = 42;
+
+    increaseEnergy(USER1, amount);
+    test.lock(USER1, amount, relayerFee, 1, nonce, ContractTestingQSB::createZeroAddress(), amount);
+
+    QSB::GetLockedOrder_output out = test.getLockedOrder(nonce);
+    EXPECT_TRUE((bool)out.exists);
+    EXPECT_TRUE(out.order.active);
+    EXPECT_EQ(out.order.sender, USER1);
+    EXPECT_EQ(out.order.amount, amount);
+    EXPECT_EQ(out.order.relayerFee, relayerFee);
+    EXPECT_EQ(out.order.nonce, nonce);
+}
+
+TEST(ContractTestingQSB, TestIsOrderFilled_ReturnsFalseForUnknownHash)
+{
+    ContractTestingQSB test;
+
+    QSB::OrderHash unknownHash;
+    for (uint32 i = 0; i < unknownHash.capacity(); ++i)
+        unknownHash.set(i, (uint8)(i & 0xff));
+
+    QSB::IsOrderFilled_output out = test.isOrderFilled(unknownHash);
+    EXPECT_FALSE((bool)out.filled);
+}
 
 // ============================================================================
 // Initialization Tests
