@@ -119,9 +119,9 @@ public:
     }
 
     // Helper to create a zero-initialized address array
-    static Array<uint8, 32> createZeroAddress()
+    static Array<uint8, 64> createZeroAddress()
     {
-        Array<uint8, 32> addr;
+        Array<uint8, 64> addr;
         setMemory(addr, 0);
         return addr;
     }
@@ -130,7 +130,18 @@ public:
     // User Procedure Helpers
     // ============================================================================
 
-    QSB::Lock_output lock(const id& user, uint64 amount, uint64 relayerFee, uint32 networkOut, uint32 nonce, const Array<uint8, 32>& toAddress, uint64 energyAmount)
+    QSB::CancelLock_output cancelLock(const id& user, uint32 nonce)
+    {
+        QSB::CancelLock_input input;
+        QSB::CancelLock_output output;
+
+        input.nonce = nonce;
+
+        invokeUserProcedure(QSB_CONTRACT_INDEX, 4, input, output, user, 0);
+        return output;
+    }
+
+    QSB::Lock_output lock(const id& user, uint64 amount, uint64 relayerFee, uint32 networkOut, uint32 nonce, const Array<uint8, 64>& toAddress, uint64 energyAmount)
     {
         QSB::Lock_input input;
         QSB::Lock_output output;
@@ -145,7 +156,7 @@ public:
         return output;
     }
 
-    QSB::OverrideLock_output overrideLock(const id& user, uint32 nonce, uint64 relayerFee, const Array<uint8, 32>& toAddress)
+    QSB::OverrideLock_output overrideLock(const id& user, uint32 nonce, uint64 relayerFee, const Array<uint8, 64>& toAddress)
     {
         QSB::OverrideLock_input input;
         QSB::OverrideLock_output output;
@@ -261,6 +272,11 @@ public:
     // ============================================================================
     // View / helper function wrappers (GetConfig, IsOracle, IsPauser, GetLockedOrder, IsOrderFilled)
     // ============================================================================
+
+    void runEndEpoch()
+    {
+        callSystemProcedure(QSB_CONTRACT_INDEX, END_EPOCH);
+    }
 
     QSB::GetConfig_output getConfig() const
     {
@@ -497,16 +513,20 @@ TEST(ContractTestingQSB, TestLock_FailsWhenPaused)
     ContractTestingQSB test;
     
     increaseEnergy(ADMIN, 1);
+    increaseEnergy(USER1, 1000000);
     
     // Pause
     test.pause(ADMIN);
     
     // Now try to lock - should fail
     const uint64 amount = 1000000;
-    increaseEnergy(USER1, amount);
+    long long balanceBefore = getBalance(USER1);
     
     QSB::Lock_output output = test.lock(USER1, amount, 10000, 1, 2, ContractTestingQSB::createZeroAddress(), amount);
     EXPECT_FALSE(output.success);
+
+    long long balanceAfter = getBalance(USER1);
+    EXPECT_EQ(balanceAfter, balanceBefore);
 }
 
 TEST(ContractTestingQSB, TestLock_FailsWhenRelayerFeeTooHigh)
@@ -518,6 +538,102 @@ TEST(ContractTestingQSB, TestLock_FailsWhenRelayerFeeTooHigh)
     
     QSB::Lock_output output = test.lock(USER1, amount, 1000000, 1, 3, ContractTestingQSB::createZeroAddress(), amount);
     EXPECT_FALSE(output.success);
+}
+
+TEST(ContractTestingQSB, TestLock_FailsWhenAmountIsZero)
+{
+    ContractTestingQSB test;
+
+    const uint64 amount = 0;
+    const uint64 relayerFee = 0;
+    const uint32 nonce = 40;
+
+    // No energy needed since amount is zero, but helper still expects an energyAmount argument
+    QSB::Lock_output output = test.lock(USER1, amount, relayerFee, 1, nonce, ContractTestingQSB::createZeroAddress(), 0);
+    EXPECT_FALSE(output.success);
+}
+
+TEST(ContractTestingQSB, TestLock_SucceedsWhenRelayerFeeIsAmountMinusOne)
+{
+    ContractTestingQSB test;
+
+    const uint64 amount = 1000000;
+    const uint64 relayerFee = amount - 1;
+    const uint32 nonce = 41;
+
+    increaseEnergy(USER1, amount);
+
+    QSB::Lock_output output = test.lock(USER1, amount, relayerFee, 1, nonce, ContractTestingQSB::createZeroAddress(), amount);
+    EXPECT_TRUE(output.success);
+}
+
+TEST(ContractTestingQSB, TestLock_FailsWhenInvocationRewardTooLowAndIsRefunded)
+{
+    ContractTestingQSB test;
+
+    const uint64 amount = 1000000;
+    const uint64 relayerFee = 10000;
+    const uint32 nonce = 42;
+
+    // User only sends half the required amount as invocationReward
+    increaseEnergy(USER1, amount / 2);
+    long long balanceBefore = getBalance(USER1);
+
+    QSB::Lock_output output = test.lock(USER1, amount, relayerFee, 1, nonce, ContractTestingQSB::createZeroAddress(), amount / 2);
+    EXPECT_FALSE(output.success);
+
+    long long balanceAfter = getBalance(USER1);
+    EXPECT_EQ(balanceAfter, balanceBefore);
+}
+
+TEST(ContractTestingQSB, TestLock_FillsAllLockedOrdersThenFailsGracefullyAndRefunds)
+{
+    ContractTestingQSB test;
+
+    const uint64 amount = 1;
+    const uint64 relayerFee = 0;
+
+    // Fill all available locked order slots
+    for (uint32 i = 0; i < QSB_MAX_LOCKED_ORDERS; ++i)
+    {
+        increaseEnergy(USER1, amount);
+        QSB::Lock_output out = test.lock(USER1, amount, relayerFee, 1, i, ContractTestingQSB::createZeroAddress(), amount);
+        EXPECT_TRUE(out.success);
+    }
+
+    // Next lock should fail with no space and refund the invocationReward
+    const uint32 nonceOverflow = QSB_MAX_LOCKED_ORDERS;
+    increaseEnergy(USER1, amount);
+    long long balanceBefore = getBalance(USER1);
+
+    QSB::Lock_output overflowOut = test.lock(USER1, amount, relayerFee, 1, nonceOverflow, ContractTestingQSB::createZeroAddress(), amount);
+    EXPECT_FALSE(overflowOut.success);
+
+    long long balanceAfter = getBalance(USER1);
+    EXPECT_EQ(balanceAfter, balanceBefore);
+}
+
+TEST(ContractTestingQSB, TestLock_FailsWhenNonceAlreadyUsedAndRefunds)
+{
+    ContractTestingQSB test;
+
+    const uint64 amount = 1000000;
+    const uint64 relayerFee = 10000;
+    const uint32 nonce = 43;
+
+    increaseEnergy(USER1, amount);
+    QSB::Lock_output first = test.lock(USER1, amount, relayerFee, 1, nonce, ContractTestingQSB::createZeroAddress(), amount);
+    EXPECT_TRUE(first.success);
+
+    // Second attempt with same nonce should fail and refund invocationReward
+    increaseEnergy(USER1, amount);
+    long long balanceBefore = getBalance(USER1);
+
+    QSB::Lock_output second = test.lock(USER1, amount, relayerFee, 1, nonce, ContractTestingQSB::createZeroAddress(), amount);
+    EXPECT_FALSE(second.success);
+
+    long long balanceAfter = getBalance(USER1);
+    EXPECT_EQ(balanceAfter, balanceBefore);
 }
 
 TEST(ContractTestingQSB, TestLock_FailsWhenNonceAlreadyUsed)
@@ -557,7 +673,7 @@ TEST(ContractTestingQSB, TestOverrideLock_Success)
     test.lock(USER1, amount, relayerFee, 1, nonce, ContractTestingQSB::createZeroAddress(), amount);
     
     // Now override it
-    Array<uint8, 32> newAddress = ContractTestingQSB::createZeroAddress();
+    Array<uint8, 64> newAddress = ContractTestingQSB::createZeroAddress();
     newAddress.set(0, 0xFF); // Change address
     
     QSB::OverrideLock_output overrideOutput = test.overrideLock(USER1, nonce, 5000, newAddress);
@@ -589,13 +705,23 @@ TEST(ContractTestingQSB, TestTransferAdmin_Success)
 {
     ContractTestingQSB test;
     
-    // First call bootstraps admin (admin is NULL_ID initially)
     increaseEnergy(ADMIN, 1);
     increaseEnergy(USER1, 1);
     QSB::TransferAdmin_output output = test.transferAdmin(ADMIN, USER1);
     EXPECT_TRUE(output.success);
     
     test.getState()->checkAdmin(USER1);
+}
+
+TEST(ContractTestingQSB, TestTransferAdmin_ToNullId)
+{
+    ContractTestingQSB test;
+
+    increaseEnergy(ADMIN, 1);
+    QSB::TransferAdmin_output output = test.transferAdmin(ADMIN, NULL_ID);
+    EXPECT_TRUE(output.success);
+
+    test.getState()->checkAdmin(NULL_ID);
 }
 
 TEST(ContractTestingQSB, TestTransferAdmin_FailsWhenNotAdmin)
@@ -729,6 +855,37 @@ TEST(ContractTestingQSB, TestEditFeeParameters)
     test.getState()->checkOracleFeeRecipient(ORACLE_FEE_RECIPIENT);
 }
 
+TEST(ContractTestingQSB, TestEditFeeParameters_RejectsTooHighBpsFee)
+{
+    ContractTestingQSB test;
+
+    // Bootstrap admin
+    increaseEnergy(ADMIN, 1);
+
+    // Try to set bpsFee above the allowed maximum
+    QSB::EditFeeParameters_output output = test.editFeeParameters(ADMIN, QSB_MAX_BPS_FEE + 1, 0, NULL_ID, NULL_ID);
+    EXPECT_FALSE(output.success);
+
+    // State should remain unchanged
+    test.getState()->checkBpsFee(0);
+}
+
+TEST(ContractTestingQSB, TestEditFeeParameters_RejectsTooHighProtocolFee)
+{
+    ContractTestingQSB test;
+
+    // Bootstrap admin and set an initial valid configuration
+    increaseEnergy(ADMIN, 1);
+    test.editFeeParameters(ADMIN, 100, 10, PROTOCOL_FEE_RECIPIENT, ORACLE_FEE_RECIPIENT);
+
+    // Attempt to set protocolFee above the allowed maximum
+    QSB::EditFeeParameters_output output = test.editFeeParameters(ADMIN, 0, QSB_MAX_PROTOCOL_FEE + 1, NULL_ID, NULL_ID);
+    EXPECT_FALSE(output.success);
+
+    // State should still reflect the previous valid configuration
+    test.getState()->checkProtocolFee(10);
+}
+
 // ============================================================================
 // Unlock Function Tests
 // ============================================================================
@@ -766,6 +923,106 @@ TEST(ContractTestingQSB, TestUnlock_FailsWhenPaused)
     
     QSB::Unlock_output output = test.unlock(USER1, order, 1, signatures);
     EXPECT_FALSE(output.success); // Should fail - contract is paused
+}
+
+TEST(ContractTestingQSB, TestUnlock_Success)
+{
+    ContractTestingQSB test;
+
+    const uint64 amount = 1000000;
+    const uint64 relayerFee = 100;
+    const uint32 nonce = 150;
+
+    // First, lock funds into the contract for this nonce
+    increaseEnergy(USER1, amount);
+    QSB::Lock_output lockOut = test.lock(USER1, amount, relayerFee, 1, nonce, ContractTestingQSB::createZeroAddress(), amount);
+    EXPECT_TRUE(lockOut.success);
+
+    // Bootstrap admin
+    increaseEnergy(ADMIN, 1);
+
+    // Derive an oracle public key from a subseed and register it as oracle
+    id subseed(123456789, 987654321, 1357986420, 0xfedcba);
+    id oraclePrivateKey;
+    id oraclePublicKey;
+    getPrivateKey(subseed.m256i_u8, oraclePrivateKey.m256i_u8);
+    getPublicKey(oraclePrivateKey.m256i_u8, oraclePublicKey.m256i_u8);
+
+    increaseEnergy(oraclePublicKey, 1);
+    test.addRole(ADMIN, (uint8)QSB::Role::Oracle, oraclePublicKey);
+
+    // Configure reasonable fees and recipients
+    test.editFeeParameters(ADMIN, 100, 50, PROTOCOL_FEE_RECIPIENT, ORACLE_FEE_RECIPIENT); // 1% bps, 50% protocol share
+
+    // Build order that will be unlocked
+    QSB::Order order = test.createTestOrder(USER1, USER2, amount, relayerFee, nonce);
+
+    // Compute digest exactly as qpi.K12(order) would
+    id digest;
+    KangarooTwelve(&order, sizeof(order), &digest, sizeof(digest));
+
+    // Create a valid oracle signature for the digest (use local buffer to avoid layout/cast issues with Array)
+    unsigned char signatureBytes[64];
+    sign(subseed.m256i_u8, oraclePublicKey.m256i_u8, digest.m256i_u8, signatureBytes);
+
+    Array<QSB::SignatureData, QSB_MAX_ORACLES> signatures;
+    setMemory(signatures, 0);
+    QSB::SignatureData sig;
+    sig.signer = oraclePublicKey;
+    for (size_t i = 0; i < 64; ++i)
+        sig.signature.set(i, (sint8)signatureBytes[i]);
+    signatures.set(0, sig);
+
+    // Snapshot balances before unlock
+    long long contractBalanceBefore = getBalance(QSB_CONTRACT_ID);
+    long long relayerBalanceBefore = getBalance(USER1);
+    long long protocolBalanceBefore = getBalance(PROTOCOL_FEE_RECIPIENT);
+    long long oracleBalanceBefore = getBalance(ORACLE_FEE_RECIPIENT);
+    long long recipientBalanceBefore = getBalance(USER2);
+
+    // Perform unlock
+    QSB::Unlock_output output = test.unlock(USER1, order, 1, signatures);
+    EXPECT_TRUE(output.success);
+
+    // Check that order hash is recorded as filled (replay protection)
+    QSB::IsOrderFilled_output filledOut = test.isOrderFilled(output.orderHash);
+    EXPECT_TRUE((bool)filledOut.filled);
+
+    // Verify balances according to fee logic
+    const uint64 netAmount = amount - relayerFee;
+    const uint64 bpsFeeAmount = (netAmount * 100) / 10000; // bpsFee = 100
+    const uint64 protocolFeeAmount = (bpsFeeAmount * 50) / 100; // protocolFee = 50
+    const uint64 oracleFeeAmount = bpsFeeAmount - protocolFeeAmount;
+    const uint64 recipientAmount = netAmount - bpsFeeAmount;
+
+    long long contractBalanceAfter = getBalance(QSB_CONTRACT_ID);
+    long long relayerBalanceAfter = getBalance(USER1);
+    long long protocolBalanceAfter = getBalance(PROTOCOL_FEE_RECIPIENT);
+    long long oracleBalanceAfter = getBalance(ORACLE_FEE_RECIPIENT);
+    long long recipientBalanceAfter = getBalance(USER2);
+
+    EXPECT_EQ(contractBalanceAfter, contractBalanceBefore - (long long)amount);
+    EXPECT_EQ(relayerBalanceAfter, relayerBalanceBefore + (long long)relayerFee);
+    EXPECT_EQ(protocolBalanceAfter, protocolBalanceBefore + (long long)protocolFeeAmount);
+    EXPECT_EQ(oracleBalanceAfter, oracleBalanceBefore + (long long)oracleFeeAmount);
+    EXPECT_EQ(recipientBalanceAfter, recipientBalanceBefore + (long long)recipientAmount);
+}
+
+TEST(ContractTestingQSB, TestUnlock_FailsWhenContractBalanceTooLow)
+{
+    ContractTestingQSB test;
+
+    increaseEnergy(USER1, 1);
+    increaseEnergy(USER2, 1);
+    increaseEnergy(ORACLE1, 1);
+    // No prior locks or deposits -> contract balance should be zero
+    QSB::Order order = test.createTestOrder(USER1, USER2, 1000000, 10000, 102);
+    Array<QSB::SignatureData, QSB_MAX_ORACLES> signatures;
+    setMemory(signatures, 0);
+    signatures.set(0, test.createMockSignature(ORACLE1));
+
+    QSB::Unlock_output output = test.unlock(USER1, order, 1, signatures);
+    EXPECT_FALSE(output.success);
 }
 
 // ============================================================================
@@ -829,4 +1086,138 @@ TEST(ContractTestingQSB, TestAdminWorkflow_SetupAndConfigure)
     
     test.getState()->checkBpsFee(50);
     test.getState()->checkProtocolFee(20);
+}
+
+// ============================================================================
+// CancelLock and END_EPOCH Tests
+// ============================================================================
+
+TEST(ContractTestingQSB, TestCancelLock_SuccessRefundsAndClearsOrder)
+{
+    ContractTestingQSB test;
+
+    const uint64 amount = 1000000;
+    const uint64 relayerFee = 10000;
+    const uint32 nonce = 300;
+
+    increaseEnergy(USER1, amount);
+    QSB::Lock_output lockOut = test.lock(USER1, amount, relayerFee, 1, nonce, ContractTestingQSB::createZeroAddress(), amount);
+    EXPECT_TRUE(lockOut.success);
+
+    // Locked order should exist
+    QSB::GetLockedOrder_output beforeCancel = test.getLockedOrder(nonce);
+    EXPECT_TRUE((bool)beforeCancel.exists);
+    EXPECT_TRUE(beforeCancel.order.active);
+
+    long long balanceBeforeCancel = getBalance(USER1);
+
+    QSB::CancelLock_output cancelOut = test.cancelLock(USER1, nonce);
+    EXPECT_TRUE(cancelOut.success);
+
+    long long balanceAfterCancel = getBalance(USER1);
+    EXPECT_EQ(balanceAfterCancel, balanceBeforeCancel + (long long)amount);
+
+    // Locked order should be cleared
+    QSB::GetLockedOrder_output afterCancel = test.getLockedOrder(nonce);
+    EXPECT_FALSE((bool)afterCancel.exists);
+
+    // Order hash should be marked as filled to prevent replay
+    QSB::IsOrderFilled_output filledOut = test.isOrderFilled(lockOut.orderHash);
+    EXPECT_TRUE((bool)filledOut.filled);
+}
+
+TEST(ContractTestingQSB, TestCancelLock_FailsWhenNotSender)
+{
+    ContractTestingQSB test;
+
+    const uint64 amount = 1000000;
+    const uint64 relayerFee = 10000;
+    const uint32 nonce = 301;
+
+    increaseEnergy(USER1, amount);
+    QSB::Lock_output lockOut = test.lock(USER1, amount, relayerFee, 1, nonce, ContractTestingQSB::createZeroAddress(), amount);
+    EXPECT_TRUE(lockOut.success);
+
+    // USER2 attempts to cancel USER1's lock
+    QSB::CancelLock_output cancelOut = test.cancelLock(USER2, nonce);
+    EXPECT_FALSE(cancelOut.success);
+
+    // Locked order should still exist and be active
+    QSB::GetLockedOrder_output locked = test.getLockedOrder(nonce);
+    EXPECT_TRUE((bool)locked.exists);
+    EXPECT_TRUE(locked.order.active);
+}
+
+TEST(ContractTestingQSB, TestCancelLock_FailsForUnknownNonce)
+{
+    ContractTestingQSB test;
+
+    const uint32 nonce = 9999;
+
+    QSB::CancelLock_output cancelOut = test.cancelLock(USER1, nonce);
+    EXPECT_FALSE(cancelOut.success);
+}
+
+TEST(ContractTestingQSB, TestCancelLock_MarksOrderFilledPreventsUnlock)
+{
+    ContractTestingQSB test;
+
+    const uint64 amount = 1000000;
+    const uint64 relayerFee = 10000;
+    const uint32 nonce = 302;
+
+    increaseEnergy(USER1, amount);
+    QSB::Lock_output lockOut = test.lock(USER1, amount, relayerFee, 1, nonce, ContractTestingQSB::createZeroAddress(), amount);
+    EXPECT_TRUE(lockOut.success);
+
+    QSB::CancelLock_output cancelOut = test.cancelLock(USER1, nonce);
+    EXPECT_TRUE(cancelOut.success);
+
+    // Build an order matching the cancelled lock
+    QSB::Order order = test.createTestOrder(USER1, NULL_ID, amount, relayerFee, nonce);
+    Array<QSB::SignatureData, QSB_MAX_ORACLES> signatures;
+    setMemory(signatures, 0);
+
+    // Unlock should now fail immediately because the order hash is already marked as filled
+    QSB::Unlock_output unlockOut = test.unlock(USER1, order, 0, signatures);
+    EXPECT_FALSE(unlockOut.success);
+
+    QSB::IsOrderFilled_output filledOut = test.isOrderFilled(lockOut.orderHash);
+    EXPECT_TRUE((bool)filledOut.filled);
+}
+
+TEST(ContractTestingQSB, TestEndEpoch_AutoCancelsExpiredLocks)
+{
+    ContractTestingQSB test;
+
+    const uint64 amount = 1000000;
+    const uint64 relayerFee = 10000;
+    const uint32 nonce = 400;
+
+    increaseEnergy(USER1, amount);
+    QSB::Lock_output lockOut = test.lock(USER1, amount, relayerFee, 1, nonce, ContractTestingQSB::createZeroAddress(), amount);
+    EXPECT_TRUE(lockOut.success);
+
+    // Locked order should exist initially
+    QSB::GetLockedOrder_output beforeEpoch = test.getLockedOrder(nonce);
+    EXPECT_TRUE((bool)beforeEpoch.exists);
+    EXPECT_TRUE(beforeEpoch.order.active);
+
+    long long balanceBeforeEpoch = getBalance(USER1);
+
+    // Simulate end of next epoch (qpi.epoch() increases)
+    test.runEndEpoch();
+    system.epoch++;
+    test.runEndEpoch();
+
+    long long balanceAfterEpoch = getBalance(USER1);
+
+    // Order should have been auto-cancelled and refunded
+    QSB::GetLockedOrder_output afterEpoch = test.getLockedOrder(nonce);
+    EXPECT_FALSE((bool)afterEpoch.exists);
+
+    QSB::IsOrderFilled_output filledOut = test.isOrderFilled(lockOut.orderHash);
+    EXPECT_FALSE((bool)filledOut.filled);
+
+    EXPECT_EQ(balanceAfterEpoch, balanceBeforeEpoch + (long long)amount);
 }
