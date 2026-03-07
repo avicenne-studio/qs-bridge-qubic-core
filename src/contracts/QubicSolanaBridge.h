@@ -45,6 +45,7 @@ static const uint8 QSBReasonRoleExists = 16;
 static const uint8 QSBReasonRoleMissing = 17;
 static const uint8 QSBReasonInvalidFeeParams = 18;
 static const uint8 QSBReasonTransferFailed = 19;
+static const uint8 QSBReasonNoMatchingLock = 20;
 
 struct QSB2
 {
@@ -1003,22 +1004,24 @@ public:
 			return;
 		}
 
-		// If this order originated from a lock(), try to find and validate the corresponding locked entry by nonce. 
-		// If no matching locked order is found, we still allow unlock() to proceed as long as signature checks and balance checks pass. 
-		// If a locked order is found but the core financial parameters differ, we reject as a safety guard.
+		// Unlock is only valid when there is a corresponding active locked entry.
+		// Reject if no locked order is found for this nonce to avoid unlocks without prior lock.
 		locals.lockedIdx = findLockedOrderIndexByNonce(state, input.order.nonce, 0);
-		if (locals.lockedIdx != NULL_INDEX)
+		if (locals.lockedIdx == NULL_INDEX)
 		{
-			locals.lockedEntry = state.lockedOrders.get((uint32)locals.lockedIdx);
-			if (!locals.lockedEntry.active ||
-			    locals.lockedEntry.amount != input.order.amount ||
-			    locals.lockedEntry.relayerFee != input.order.relayerFee ||
-			    locals.lockedEntry.networkOut != input.order.networkOut)
-			{
-				locals.logMsg.reasonCode = QSBReasonInvalidAmount;
-				LOG_INFO(locals.logMsg);
-				return;
-			}
+			locals.logMsg.reasonCode = QSBReasonNoMatchingLock;
+			LOG_INFO(locals.logMsg);
+			return;
+		}
+		locals.lockedEntry = state.lockedOrders.get((uint32)locals.lockedIdx);
+		if (!locals.lockedEntry.active ||
+		    locals.lockedEntry.amount != input.order.amount ||
+		    locals.lockedEntry.relayerFee != input.order.relayerFee ||
+		    locals.lockedEntry.networkOut != input.order.networkOut)
+		{
+			locals.logMsg.reasonCode = QSBReasonInvalidAmount;
+			LOG_INFO(locals.logMsg);
+			return;
 		}
 
 		// Compute digest and orderHash
@@ -1803,7 +1806,7 @@ public:
 			if (!locals.entry.active)
 				continue;
 
-			if (qpi.epoch() > locals.entry.lockEpoch)
+			if (qpi.epoch() > locals.entry.lockEpoch + 1)
 			{
 				// Refund locked amount back to the original sender
 				if (qpi.transfer(locals.entry.sender, (sint64)locals.entry.amount) >= 0)
