@@ -10,6 +10,7 @@ static constexpr uint32 QSB_MAX_FILLED_ORDERS = 2048;
 static constexpr uint32 QSB_MAX_LOCKED_ORDERS = 1024;
 static constexpr uint32 QSB_MAX_BPS_FEE = 1000;      // max 10% fee (1000 / 10000)
 static constexpr uint32 QSB_MAX_PROTOCOL_FEE = 100;  // max 100% of bps fee
+static constexpr uint32 QSB_QUERY_MAX_PAGE_SIZE = 64; // max entries per paginated query
 
 // Log types for QSB contract (no enums allowed in contracts)
 static const uint32 QSBLogLock = 1;
@@ -386,6 +387,7 @@ public:
 		uint32 bpsFee;
 		uint32 protocolFee;
 		uint32 oracleCount;
+		uint32 pauserCount;
 		uint8 oracleThreshold;
 		bit paused;
 	};
@@ -431,6 +433,67 @@ public:
 		bit filled;
 	};
 
+	// ComputeOrderHash: canonical hash for Unlock verification
+	struct ComputeOrderHash_input
+	{
+		Order order;
+	};
+
+	struct ComputeOrderHash_output
+	{
+		OrderHash hash;
+	};
+
+	// GetOracles: bulk enumeration of all oracle accounts
+	struct GetOracles_input
+	{
+	};
+
+	struct GetOracles_output
+	{
+		uint32 count;
+		Array<id, QSB_MAX_ORACLES> accounts;
+	};
+
+	// GetPausers: bulk enumeration of all pauser accounts
+	struct GetPausers_input
+	{
+	};
+
+	struct GetPausers_output
+	{
+		uint32 count;
+		Array<id, QSB_MAX_PAUSERS> accounts;
+	};
+
+	// GetLockedOrders: paginated enumeration of active locked orders
+	struct GetLockedOrders_input
+	{
+		uint32 offset; // skip this many active entries
+		uint32 limit;  // return up to this many (capped at QSB_QUERY_MAX_PAGE_SIZE)
+	};
+
+	struct GetLockedOrders_output
+	{
+		uint32 totalActive;
+		uint32 returned;
+		Array<LockedOrderEntry, QSB_QUERY_MAX_PAGE_SIZE> entries;
+	};
+
+	// GetFilledOrders: paginated enumeration of filled order hashes
+	struct GetFilledOrders_input
+	{
+		uint32 offset; // skip this many filled entries
+		uint32 limit;  // return up to this many (capped at QSB_QUERY_MAX_PAGE_SIZE)
+	};
+
+	struct GetFilledOrders_output
+	{
+		uint32 totalActive;
+		uint32 returned;
+		Array<OrderHash, QSB_QUERY_MAX_PAGE_SIZE> hashes;
+	};
+
 protected:
 	// ---------------------------------------------------------------------
 	// State variables
@@ -444,6 +507,7 @@ protected:
 	Array<FilledOrderEntry, QSB_MAX_FILLED_ORDERS> filledOrders;
 	Array<LockedOrderEntry, QSB_MAX_LOCKED_ORDERS> lockedOrders;
 	uint32 oracleCount;
+	uint32 pauserCount;
 	uint32 bpsFee;               // fee taken in BPS (base 10000) from netAmount
 	uint32 protocolFee;          // percent of BPS fee sent to protocol (base 100)
 	uint8 oracleThreshold; // percent [1..100]
@@ -877,6 +941,7 @@ public:
 		output.bpsFee = state.bpsFee;
 		output.protocolFee = state.protocolFee;
 		output.oracleCount = state.oracleCount;
+		output.pauserCount = state.pauserCount;
 		output.oracleThreshold = state.oracleThreshold;
 		output.paused = state.paused;
 	}
@@ -916,6 +981,130 @@ public:
 	{
 		output.filled = isOrderFilled(state, input.hash, 0, 0, locals.same, locals.entry);
 	}
+
+	struct ComputeOrderHash_locals
+	{
+		id digest;
+	};
+
+	PUBLIC_FUNCTION_WITH_LOCALS(ComputeOrderHash)
+	{
+		locals.digest = qpi.K12(input.order);
+		output.hash.setMem(locals.digest);
+	}
+
+	struct GetOracles_locals
+	{
+		uint32 i;
+		RoleEntry entry;
+	};
+
+	PUBLIC_FUNCTION_WITH_LOCALS(GetOracles)
+	{
+		output.count = 0;
+		setMemory(output.accounts, 0);
+		for (locals.i = 0; locals.i < state.oracles.capacity() && output.count < output.accounts.capacity(); ++locals.i)
+		{
+			locals.entry = state.oracles.get(locals.i);
+			if (locals.entry.active)
+			{
+				output.accounts.set(output.count, locals.entry.account);
+				++output.count;
+			}
+		}
+	}
+
+	struct GetPausers_locals
+	{
+		uint32 i;
+		RoleEntry entry;
+	};
+
+	PUBLIC_FUNCTION_WITH_LOCALS(GetPausers)
+	{
+		output.count = 0;
+		setMemory(output.accounts, 0);
+		for (locals.i = 0; locals.i < state.pausers.capacity() && output.count < output.accounts.capacity(); ++locals.i)
+		{
+			locals.entry = state.pausers.get(locals.i);
+			if (locals.entry.active)
+			{
+				output.accounts.set(output.count, locals.entry.account);
+				++output.count;
+			}
+		}
+	}
+
+	struct GetLockedOrders_locals
+	{
+		uint32 i;
+		uint32 totalActive;
+		uint32 collected;
+		uint32 effectiveLimit;
+		LockedOrderEntry entry;
+	};
+
+	PUBLIC_FUNCTION_WITH_LOCALS(GetLockedOrders)
+	{
+		output.totalActive = 0;
+		output.returned = 0;
+		setMemory(output.entries, 0);
+		locals.effectiveLimit = input.limit;
+		if (locals.effectiveLimit > QSB_QUERY_MAX_PAGE_SIZE)
+			locals.effectiveLimit = QSB_QUERY_MAX_PAGE_SIZE;
+		locals.collected = 0;
+		for (locals.i = 0; locals.i < state.lockedOrders.capacity(); ++locals.i)
+		{
+			locals.entry = state.lockedOrders.get(locals.i);
+			if (!locals.entry.active)
+				continue;
+			++locals.totalActive;
+			if (locals.totalActive <= input.offset)
+				continue;
+			if (locals.collected >= locals.effectiveLimit)
+				continue;
+			output.entries.set(locals.collected, locals.entry);
+			++locals.collected;
+		}
+		output.totalActive = locals.totalActive;
+		output.returned = locals.collected;
+	}
+
+	struct GetFilledOrders_locals
+	{
+		uint32 i;
+		uint32 totalActive;
+		uint32 collected;
+		uint32 effectiveLimit;
+		FilledOrderEntry entry;
+	};
+
+	PUBLIC_FUNCTION_WITH_LOCALS(GetFilledOrders)
+	{
+		output.totalActive = 0;
+		output.returned = 0;
+		setMemory(output.hashes, 0);
+		locals.effectiveLimit = input.limit;
+		if (locals.effectiveLimit > QSB_QUERY_MAX_PAGE_SIZE)
+			locals.effectiveLimit = QSB_QUERY_MAX_PAGE_SIZE;
+		locals.collected = 0;
+		for (locals.i = 0; locals.i < state.filledOrders.capacity(); ++locals.i)
+		{
+			locals.entry = state.filledOrders.get(locals.i);
+			if (!locals.entry.used)
+				continue;
+			++locals.totalActive;
+			if (locals.totalActive <= input.offset)
+				continue;
+			if (locals.collected >= locals.effectiveLimit)
+				continue;
+			output.hashes.set(locals.collected, locals.entry.hash);
+			++locals.collected;
+		}
+		output.totalActive = locals.totalActive;
+		output.returned = locals.collected;
+	}
+
 	struct Unlock_locals
 	{
 		id digest;
@@ -1474,6 +1663,7 @@ public:
 					locals.entry.account = input.account;
 					locals.entry.active  = true;
 					state.pausers.set(locals.i, locals.entry);
+					++state.pauserCount;
 					output.success = true;
 					locals.logMsg._contractIndex = SELF_INDEX;
 					locals.logMsg._type = QSBLogRoleGranted;
@@ -1563,6 +1753,8 @@ public:
 				locals.entry = state.pausers.get((uint32)locals.idx);
 				locals.entry.active = false;
 				state.pausers.set((uint32)locals.idx, locals.entry);
+				if (state.pauserCount > 0)
+					--state.pauserCount;
 				output.success = true;
 
 				locals.logMsg._contractIndex = SELF_INDEX;
@@ -1769,6 +1961,11 @@ public:
 		REGISTER_USER_FUNCTION(IsPauser, 3);
 		REGISTER_USER_FUNCTION(GetLockedOrder, 4);
 		REGISTER_USER_FUNCTION(IsOrderFilled, 5);
+		REGISTER_USER_FUNCTION(ComputeOrderHash, 6);
+		REGISTER_USER_FUNCTION(GetOracles, 7);
+		REGISTER_USER_FUNCTION(GetPausers, 8);
+		REGISTER_USER_FUNCTION(GetLockedOrders, 9);
+		REGISTER_USER_FUNCTION(GetFilledOrders, 10);
 
 		// User procedures
 		REGISTER_USER_PROCEDURE(Lock, 1);
@@ -1806,7 +2003,7 @@ public:
 			if (!locals.entry.active)
 				continue;
 
-			if (qpi.epoch() > locals.entry.lockEpoch + 1)
+			if (qpi.epoch() > locals.entry.lockEpoch)
 			{
 				// Refund locked amount back to the original sender
 				if (qpi.transfer(locals.entry.sender, (sint64)locals.entry.amount) >= 0)
@@ -1834,6 +2031,7 @@ public:
 
 		state.oracleThreshold = 67; // default 67% (2/3 + 1 style)
 		state.oracleCount     = 0;
+		state.pauserCount     = 0;
 
 		// Clear role mappings and filled order table
 		setMemory(state.oracles, 0);
