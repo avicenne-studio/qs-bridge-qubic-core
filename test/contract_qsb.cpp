@@ -130,17 +130,6 @@ public:
     // User Procedure Helpers
     // ============================================================================
 
-    QSB::CancelLock_output cancelLock(const id& user, uint32 nonce)
-    {
-        QSB::CancelLock_input input;
-        QSB::CancelLock_output output;
-
-        input.nonce = nonce;
-
-        invokeUserProcedure(QSB_CONTRACT_INDEX, 4, input, output, user, 0);
-        return output;
-    }
-
     QSB::Lock_output lock(const id& user, uint64 amount, uint64 relayerFee, uint32 networkOut, uint32 nonce, const Array<uint8, 64>& toAddress, uint64 energyAmount)
     {
         QSB::Lock_input input;
@@ -1003,40 +992,4 @@ TEST(ContractTestingQSB, TestAdminWorkflow_SetupAndConfigure)
     
     test.getState()->checkBpsFee(50);
     test.getState()->checkProtocolFee(20);
-}
-
-// ============================================================================
-// CancelLock and END_EPOCH Tests
-// ============================================================================
-
-TEST(ContractTestingQSB, TestCancelLock_FailsWhenNotSender)
-{
-    ContractTestingQSB test;
-
-    const uint64 amount = 1000000;
-    const uint64 relayerFee = 10000;
-    const uint32 nonce = 301;
-
-    increaseEnergy(USER1, amount);
-    QSB::Lock_output lockOut = test.lock(USER1, amount, relayerFee, 1, nonce, ContractTestingQSB::createZeroAddress(), amount);
-    EXPECT_TRUE(lockOut.success);
-
-    // USER2 attempts to cancel USER1's lock
-    QSB::CancelLock_output cancelOut = test.cancelLock(USER2, nonce);
-    EXPECT_FALSE(cancelOut.success);
-
-    // Locked order should still exist and be active
-    QSB::GetLockedOrder_output locked = test.getLockedOrder(nonce);
-    EXPECT_TRUE((bool)locked.exists);
-    EXPECT_TRUE(locked.order.active);
-}
-
-TEST(ContractTestingQSB, TestCancelLock_FailsForUnknownNonce)
-{
-    ContractTestingQSB test;
-
-    const uint32 nonce = 9999;
-
-    QSB::CancelLock_output cancelOut = test.cancelLock(USER1, nonce);
-    EXPECT_FALSE(cancelOut.success);
 }

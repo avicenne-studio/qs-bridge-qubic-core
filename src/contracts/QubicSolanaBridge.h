@@ -46,6 +46,7 @@ static const uint8 QSBReasonRoleMissing = 17;
 static const uint8 QSBReasonInvalidFeeParams = 18;
 static const uint8 QSBReasonTransferFailed = 19;
 static const uint8 QSBReasonNoMatchingLock = 20;
+static const uint8 QSBReasonInsufficientLockedAmount = 21;
 
 struct QSB2
 {
@@ -110,6 +111,8 @@ public:
 		id sender;
 		uint64 amount;
 		uint64 relayerFee;
+		uint64 unlockedAmount;
+		uint64 unlockedRelayerFee;
 		uint32 networkOut;
 		uint32 nonce;
 		Array<uint8, 64> toAddress;
@@ -160,20 +163,6 @@ public:
 		uint64 amount;
 		uint64 relayerFee;
 		id relayer;
-		uint8 success;
-		uint8 reasonCode;
-		sint8 _terminator;
-	};
-
-	struct QSBLogCancelLockMessage
-	{
-		uint32 _contractIndex;
-		uint32 _type;
-		id from;
-		uint64 amount;
-		uint32 networkOut;
-		uint32 nonce;
-		OrderHash orderHash;
 		uint8 success;
 		uint8 reasonCode;
 		sint8 _terminator;
@@ -268,17 +257,6 @@ public:
 	struct OverrideLock_output
 	{
 		OrderHash orderHash;
-		bit success;
-	};
-
-	// 2b) cancelLock()
-	struct CancelLock_input
-	{
-		uint32 nonce;
-	};
-
-	struct CancelLock_output
-	{
 		bit success;
 	};
 
@@ -510,6 +488,8 @@ protected:
 	{
 		entry.active = false;
 		entry.lockEpoch = 0;
+		entry.unlockedAmount = 0;
+		entry.unlockedRelayerFee = 0;
 		entry.sender = 0;
 		entry.networkOut = 0;
 		entry.amount = 0;
@@ -757,6 +737,8 @@ public:
 		locals.entry.networkOut = input.networkOut;
 		locals.entry.amount = input.amount;
 		locals.entry.relayerFee = input.relayerFee;
+		locals.entry.unlockedAmount = 0;
+		locals.entry.unlockedRelayerFee = 0;
 		locals.entry.nonce = input.nonce;
 		copyMemory(locals.entry.toAddress, input.toAddress);
 		locals.entry.orderHash = output.orderHash;
@@ -935,6 +917,8 @@ public:
 		uint64 protocolFeeAmount;
 		uint64 oracleFeeAmount;
 		uint64 recipientAmount;
+		uint64 remainingAmount;
+		uint64 remainingRelayerFee;
 		bool same;
 		bool allTransfersOk;
 		sint64 lockedIdx;
@@ -1014,12 +998,34 @@ public:
 			return;
 		}
 		locals.lockedEntry = state.lockedOrders.get((uint32)locals.lockedIdx);
+		// Basic sanity checks on the locked entry
 		if (!locals.lockedEntry.active ||
-		    locals.lockedEntry.amount != input.order.amount ||
-		    locals.lockedEntry.relayerFee != input.order.relayerFee ||
 		    locals.lockedEntry.networkOut != input.order.networkOut)
 		{
 			locals.logMsg.reasonCode = QSBReasonInvalidAmount;
+			LOG_INFO(locals.logMsg);
+			return;
+		}
+
+		// Enforce that we never unlock more than was originally locked for this nonce.
+		// We track cumulative unlockedAmount / unlockedRelayerFee on the LockedOrderEntry
+		// and ensure the new unlock fits within the remaining capacity.
+		if (locals.lockedEntry.unlockedAmount > locals.lockedEntry.amount ||
+		    locals.lockedEntry.unlockedRelayerFee > locals.lockedEntry.relayerFee)
+		{
+			// Invariant violation on stored state; reject defensively.
+			locals.logMsg.reasonCode = QSBReasonInvalidAmount;
+			LOG_INFO(locals.logMsg);
+			return;
+		}
+
+		locals.remainingAmount = locals.lockedEntry.amount - locals.lockedEntry.unlockedAmount;
+		locals.remainingRelayerFee = locals.lockedEntry.relayerFee - locals.lockedEntry.unlockedRelayerFee;
+
+		if (input.order.amount > locals.remainingAmount ||
+		    input.order.relayerFee > locals.remainingRelayerFee)
+		{
+			locals.logMsg.reasonCode = QSBReasonInsufficientLockedAmount;
 			LOG_INFO(locals.logMsg);
 			return;
 		}
@@ -1199,11 +1205,23 @@ public:
 		// Mark order as filled
 		markOrderFilled(state, locals.hash, 0, 0, 0, locals.entry);
 
-		// If we had a corresponding locked order, clear its slot so it can be reused
+		// If we had a corresponding locked order, update its cumulative unlocked amounts.
+		// When the full amount and relayerFee have been unlocked, clear the slot so it can be reused.
 		if (locals.lockedIdx != NULL_INDEX)
 		{
-			clearLockedOrderEntry(locals.lockedEntry);
-			state.lockedOrders.set((uint32)locals.lockedIdx, locals.lockedEntry);
+			locals.lockedEntry.unlockedAmount += input.order.amount;
+			locals.lockedEntry.unlockedRelayerFee += input.order.relayerFee;
+
+			if (locals.lockedEntry.unlockedAmount >= locals.lockedEntry.amount ||
+			    locals.lockedEntry.unlockedRelayerFee >= locals.lockedEntry.relayerFee)
+			{
+				clearLockedOrderEntry(locals.lockedEntry);
+				state.lockedOrders.set((uint32)locals.lockedIdx, locals.lockedEntry);
+			}
+			else
+			{
+				state.lockedOrders.set((uint32)locals.lockedIdx, locals.lockedEntry);
+			}
 		}
 
 		output.success = true;
@@ -1302,80 +1320,6 @@ public:
 		locals.logMsg.success = 1;
 		locals.logMsg.reasonCode = QSBReasonNone;
 		locals.logMsg._terminator = 0;
-		LOG_INFO(locals.logMsg);
-	}
-
-	struct CancelLock_locals
-	{
-		sint64 idx;
-		LockedOrderEntry entry;
-		FilledOrderEntry filled;
-		bool same;
-		QSBLogCancelLockMessage logMsg;
-	};
-
-	PUBLIC_PROCEDURE_WITH_LOCALS(CancelLock)
-	{
-		locals.logMsg._contractIndex = SELF_INDEX;
-		locals.logMsg._type = QSBLogCancelLock;
-		locals.logMsg.from = qpi.invocator();
-		locals.logMsg.amount = 0;
-		locals.logMsg.networkOut = 0;
-		locals.logMsg.nonce = input.nonce;
-		setMemory(locals.logMsg.orderHash, 0);
-		locals.logMsg.success = 0;
-		locals.logMsg.reasonCode = QSBReasonNone;
-		locals.logMsg._terminator = 0;
-		output.success = false;
-
-		// Always refund invocationReward (locking was done in original lock() call)
-		if (qpi.invocationReward() > 0)
-		{
-			qpi.transfer(qpi.invocator(), qpi.invocationReward());
-		}
-
-		// Find existing order by nonce
-		locals.idx = findLockedOrderIndexByNonce(state, input.nonce, 0);
-		if (locals.idx == NULL_INDEX)
-		{
-			locals.logMsg.reasonCode = QSBReasonNonceUsed;
-			LOG_INFO(locals.logMsg);
-			return;
-		}
-
-		locals.entry = state.lockedOrders.get((uint32)locals.idx);
-
-		// Only original sender can cancel
-		if (locals.entry.sender != qpi.invocator())
-		{
-			locals.logMsg.reasonCode = QSBReasonNotSender;
-			LOG_INFO(locals.logMsg);
-			return;
-		}
-
-		// Refund locked amount back to the creator
-		locals.logMsg.amount = locals.entry.amount;
-		locals.logMsg.networkOut = locals.entry.networkOut;
-		locals.logMsg.nonce = locals.entry.nonce;
-		locals.logMsg.orderHash = locals.entry.orderHash;
-
-		if (qpi.transfer(locals.entry.sender, (sint64)locals.entry.amount) < 0)
-		{
-			locals.logMsg.reasonCode = QSBReasonTransferFailed;
-			LOG_INFO(locals.logMsg);
-			return;
-		}
-
-		// Mark hash as filled/cancelled for replay protection
-		markOrderFilled(state, locals.entry.orderHash, 0, 0, 0, locals.filled);
-
-		// Free the locked slot
-		clearLockedOrderEntry(locals.entry);
-		state.lockedOrders.set((uint32)locals.idx, locals.entry);
-
-		output.success = true;
-		locals.logMsg.success = 1;
-		locals.logMsg.reasonCode = QSBReasonNone;
 		LOG_INFO(locals.logMsg);
 	}
 
@@ -1774,7 +1718,6 @@ public:
 		REGISTER_USER_PROCEDURE(Lock, 1);
 		REGISTER_USER_PROCEDURE(OverrideLock, 2);
 		REGISTER_USER_PROCEDURE(Unlock, 3);
-		REGISTER_USER_PROCEDURE(CancelLock, 4);
 
 		// Admin procedures
 		REGISTER_USER_PROCEDURE(TransferAdmin, 10);
@@ -1792,6 +1735,7 @@ public:
 
 	struct END_EPOCH_locals
 	{
+		uint64 remainingAmount;
 		uint32 i;
 		LockedOrderEntry entry;
 		FilledOrderEntry filledEntry;
@@ -1808,8 +1752,23 @@ public:
 
 			if (qpi.epoch() > locals.entry.lockEpoch + 1)
 			{
-				// Refund locked amount back to the original sender
-				if (qpi.transfer(locals.entry.sender, (sint64)locals.entry.amount) >= 0)
+				// Refund only the remaining locked amount (total minus what has already been unlocked)
+				if (locals.entry.unlockedAmount > locals.entry.amount)
+				{
+					// Corrupted state; skip but keep entry so it cannot be reused silently.
+					continue;
+				}
+
+				locals.remainingAmount = locals.entry.amount - locals.entry.unlockedAmount;
+				if (locals.remainingAmount == 0)
+				{
+					// Nothing left to refund; just clear the slot and continue.
+					clearLockedOrderEntry(locals.entry);
+					state.lockedOrders.set(locals.i, locals.entry);
+					continue;
+				}
+
+				if (qpi.transfer(locals.entry.sender, (sint64)locals.remainingAmount) >= 0)
 				{
 					// Mark hash as filled/cancelled for replay protection
 					markOrderFilled(state, locals.entry.orderHash, 0, 0, 0, locals.filledEntry);
