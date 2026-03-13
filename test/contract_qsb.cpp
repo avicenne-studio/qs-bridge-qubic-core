@@ -311,6 +311,51 @@ public:
         callFunction(QSB_CONTRACT_INDEX, 5, input, output);
         return output;
     }
+
+    QSB::ComputeOrderHash_output computeOrderHash(const QSB::Order& order) const
+    {
+        QSB::ComputeOrderHash_input input;
+        QSB::ComputeOrderHash_output output;
+        input.order = order;
+        callFunction(QSB_CONTRACT_INDEX, 6, input, output);
+        return output;
+    }
+
+    QSB::GetOracles_output getOracles() const
+    {
+        QSB::GetOracles_input input;
+        QSB::GetOracles_output output;
+        callFunction(QSB_CONTRACT_INDEX, 7, input, output);
+        return output;
+    }
+
+    QSB::GetPausers_output getPausers() const
+    {
+        QSB::GetPausers_input input;
+        QSB::GetPausers_output output;
+        callFunction(QSB_CONTRACT_INDEX, 8, input, output);
+        return output;
+    }
+
+    QSB::GetLockedOrders_output getLockedOrders(uint32 offset, uint32 limit) const
+    {
+        QSB::GetLockedOrders_input input;
+        QSB::GetLockedOrders_output output;
+        input.offset = offset;
+        input.limit = limit;
+        callFunction(QSB_CONTRACT_INDEX, 9, input, output);
+        return output;
+    }
+
+    QSB::GetFilledOrders_output getFilledOrders(uint32 offset, uint32 limit) const
+    {
+        QSB::GetFilledOrders_input input;
+        QSB::GetFilledOrders_output output;
+        input.offset = offset;
+        input.limit = limit;
+        callFunction(QSB_CONTRACT_INDEX, 10, input, output);
+        return output;
+    }
 };
 
 // ============================================================================
@@ -443,6 +488,168 @@ TEST(ContractTestingQSB, TestIsOrderFilled_ReturnsFalseForUnknownHash)
 
     QSB::IsOrderFilled_output out = test.isOrderFilled(unknownHash);
     EXPECT_FALSE((bool)out.filled);
+}
+
+// ============================================================================
+// New query function tests (ComputeOrderHash, GetOracles, GetPausers, GetLockedOrders, GetFilledOrders)
+// ============================================================================
+
+TEST(ContractTestingQSB, TestComputeOrderHash_ReturnsConsistentHash)
+{
+    ContractTestingQSB test;
+
+    QSB::Order order = test.createTestOrder(USER1, USER2, 1000000, 10000, 99);
+    QSB::ComputeOrderHash_output out = test.computeOrderHash(order);
+
+    // Hash should be non-zero
+    bool hashNonZero = false;
+    for (uint32 i = 0; i < out.hash.capacity(); ++i)
+    {
+        if (out.hash.get(i) != 0)
+        {
+            hashNonZero = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(hashNonZero);
+
+    // Same order should produce same hash
+    QSB::ComputeOrderHash_output out2 = test.computeOrderHash(order);
+    for (uint32 i = 0; i < out.hash.capacity(); ++i)
+        EXPECT_EQ(out.hash.get(i), out2.hash.get(i));
+}
+
+TEST(ContractTestingQSB, TestComputeOrderHash_MatchesLockOutput)
+{
+    ContractTestingQSB test;
+
+    const uint64 amount = 1000000;
+    const uint64 relayerFee = 10000;
+    const uint32 nonce = 50;
+
+    increaseEnergy(USER1, amount);
+    QSB::Lock_output lockOut = test.lock(USER1, amount, relayerFee, 1, nonce, ContractTestingQSB::createZeroAddress(), amount);
+    EXPECT_TRUE(lockOut.success);
+
+    // Create order matching what Lock hashes (fromAddress=invocator, toAddress=NULL_ID, amount, relayerFee, networkOut, nonce)
+    QSB::Order order = test.createTestOrder(USER1, NULL_ID, amount, relayerFee, nonce);
+    order.networkIn = 0;
+    order.networkOut = 1;
+    order.destinationChainId = 1;
+    order.tokenIn = 0;
+    order.tokenOut = 0;
+
+    QSB::ComputeOrderHash_output computed = test.computeOrderHash(order);
+    for (uint32 i = 0; i < lockOut.orderHash.capacity(); ++i)
+        EXPECT_EQ(lockOut.orderHash.get(i), computed.hash.get(i));
+}
+
+TEST(ContractTestingQSB, TestGetOracles_ReturnsEmptyWhenNoOracles)
+{
+    ContractTestingQSB test;
+
+    QSB::GetOracles_output out = test.getOracles();
+    EXPECT_EQ(out.count, 0u);
+}
+
+TEST(ContractTestingQSB, TestGetOracles_ReturnsAllOraclesAfterAddRole)
+{
+    ContractTestingQSB test;
+
+    increaseEnergy(ADMIN, 1);
+    increaseEnergy(ORACLE1, 1);
+    increaseEnergy(ORACLE2, 1);
+    test.addRole(ADMIN, (uint8)QSB::Role::Oracle, ORACLE1);
+    test.addRole(ADMIN, (uint8)QSB::Role::Oracle, ORACLE2);
+
+    QSB::GetOracles_output out = test.getOracles();
+    EXPECT_EQ(out.count, 2u);
+    EXPECT_EQ(out.accounts.get(0), ORACLE1);
+    EXPECT_EQ(out.accounts.get(1), ORACLE2);
+}
+
+TEST(ContractTestingQSB, TestGetPausers_ReturnsEmptyWhenNoPausers)
+{
+    ContractTestingQSB test;
+
+    QSB::GetPausers_output out = test.getPausers();
+    EXPECT_EQ(out.count, 0u);
+}
+
+TEST(ContractTestingQSB, TestGetPausers_ReturnsAllPausersAfterAddRole)
+{
+    ContractTestingQSB test;
+
+    increaseEnergy(ADMIN, 1);
+    increaseEnergy(PAUSER1, 1);
+    test.addRole(ADMIN, (uint8)QSB::Role::Pauser, PAUSER1);
+
+    QSB::GetPausers_output out = test.getPausers();
+    EXPECT_EQ(out.count, 1u);
+    EXPECT_EQ(out.accounts.get(0), PAUSER1);
+}
+
+TEST(ContractTestingQSB, TestGetLockedOrders_ReturnsEmptyWhenNoLocks)
+{
+    ContractTestingQSB test;
+
+    QSB::GetLockedOrders_output out = test.getLockedOrders(0, 64);
+    EXPECT_EQ(out.totalActive, 0u);
+    EXPECT_EQ(out.returned, 0u);
+}
+
+TEST(ContractTestingQSB, TestGetLockedOrders_ReturnsLockedOrdersAfterLock)
+{
+    ContractTestingQSB test;
+
+    const uint64 amount = 1000000;
+    const uint64 relayerFee = 10000;
+    const uint32 nonce = 77;
+
+    increaseEnergy(USER1, amount);
+    test.lock(USER1, amount, relayerFee, 1, nonce, ContractTestingQSB::createZeroAddress(), amount);
+
+    QSB::GetLockedOrders_output out = test.getLockedOrders(0, 64);
+    EXPECT_EQ(out.totalActive, 1u);
+    EXPECT_EQ(out.returned, 1u);
+    EXPECT_TRUE(out.entries.get(0).active);
+    EXPECT_EQ(out.entries.get(0).sender, USER1);
+    EXPECT_EQ(out.entries.get(0).amount, amount);
+    EXPECT_EQ(out.entries.get(0).nonce, nonce);
+}
+
+TEST(ContractTestingQSB, TestGetLockedOrders_Pagination)
+{
+    ContractTestingQSB test;
+
+    const uint64 amount = 1;
+    increaseEnergy(USER1, amount * 5);
+
+    for (uint32 i = 0; i < 5; ++i)
+    {
+        test.lock(USER1, amount, 0, 1, i, ContractTestingQSB::createZeroAddress(), amount);
+    }
+
+    QSB::GetLockedOrders_output out = test.getLockedOrders(0, 2);
+    EXPECT_EQ(out.totalActive, 5u);
+    EXPECT_EQ(out.returned, 2u);
+
+    out = test.getLockedOrders(2, 2);
+    EXPECT_EQ(out.totalActive, 5u);
+    EXPECT_EQ(out.returned, 2u);
+
+    out = test.getLockedOrders(4, 2);
+    EXPECT_EQ(out.totalActive, 5u);
+    EXPECT_EQ(out.returned, 1u);
+}
+
+TEST(ContractTestingQSB, TestGetFilledOrders_ReturnsEmptyWhenNoFills)
+{
+    ContractTestingQSB test;
+
+    QSB::GetFilledOrders_output out = test.getFilledOrders(0, 64);
+    EXPECT_EQ(out.totalActive, 0u);
+    EXPECT_EQ(out.returned, 0u);
 }
 
 // ============================================================================
