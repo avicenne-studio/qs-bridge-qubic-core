@@ -55,6 +55,14 @@ public:
     {
         EXPECT_EQ(this->oracleFeeRecipient, expectedRecipient);
     }
+
+    // Helper to mark an order hash as filled via the internal ring buffer logic.
+    void forceMarkOrderFilled(const QSB::OrderHash& hash)
+    {
+        FilledOrderEntry entry;
+        bool same = false;
+        markOrderFilled(*this, hash, 0, 0, same, entry);
+    }
 };
 
 class ContractTestingQSB : protected ContractTesting
@@ -488,6 +496,11 @@ TEST(ContractTestingQSB, TestIsOrderFilled_ReturnsFalseForUnknownHash)
 
     QSB::IsOrderFilled_output out = test.isOrderFilled(unknownHash);
     EXPECT_FALSE((bool)out.filled);
+
+    // After marking the hash as filled via the internal helper, it should report true.
+    test.getState()->forceMarkOrderFilled(unknownHash);
+    QSB::IsOrderFilled_output out2 = test.isOrderFilled(unknownHash);
+    EXPECT_TRUE((bool)out2.filled);
 }
 
 // ============================================================================
@@ -652,6 +665,39 @@ TEST(ContractTestingQSB, TestGetFilledOrders_ReturnsEmptyWhenNoFills)
     EXPECT_EQ(out.returned, 0u);
 }
 
+TEST(ContractTestingQSB, TestFilledOrders_RingBufferOverwritesOldEntries)
+{
+    ContractTestingQSB test;
+
+    // Artificially mark more orders as filled than the ring capacity
+    // to ensure oldest entries are overwritten while newer ones remain.
+    for (uint32 i = 0; i < QSB_MAX_FILLED_ORDERS + 1; ++i)
+    {
+        QSB::OrderHash hash;
+        setMemory(hash, 0);
+        // Encode i into the first two bytes to avoid collisions when
+        // QSB_MAX_FILLED_ORDERS exceeds 255.
+        hash.set(0, (uint8)(i & 0xff));
+        hash.set(1, (uint8)((i >> 8) & 0xff));
+        test.getState()->forceMarkOrderFilled(hash);
+    }
+
+    // Hash for 0 should have been overwritten (only last QSB_MAX_FILLED_ORDERS kept)
+    QSB::OrderHash hash0;
+    setMemory(hash0, 0);
+    hash0.set(1, 0);
+    QSB::IsOrderFilled_output out0 = test.isOrderFilled(hash0);
+    EXPECT_FALSE((bool)out0.filled);
+
+    // Hash for the last inserted nonce (QSB_MAX_FILLED_ORDERS) should be present
+    QSB::OrderHash hashLast;
+    setMemory(hashLast, 0);
+    hashLast.set(0, (uint8)(QSB_MAX_FILLED_ORDERS & 0xff));
+    hashLast.set(1, (uint8)((QSB_MAX_FILLED_ORDERS >> 8) & 0xff));
+    QSB::IsOrderFilled_output outLast = test.isOrderFilled(hashLast);
+    EXPECT_TRUE((bool)outLast.filled);
+}
+
 // ============================================================================
 // Initialization Tests
 // ============================================================================
@@ -782,14 +828,14 @@ TEST(ContractTestingQSB, TestLock_FailsWhenInvocationRewardTooLowAndIsRefunded)
     EXPECT_EQ(balanceAfter, balanceBefore);
 }
 
-TEST(ContractTestingQSB, TestLock_FillsAllLockedOrdersThenFailsGracefullyAndRefunds)
+TEST(ContractTestingQSB, TestLock_RingBufferOverwritesOldLockedOrders)
 {
     ContractTestingQSB test;
 
     const uint64 amount = 1;
     const uint64 relayerFee = 0;
 
-    // Fill all available locked order slots
+    // Fill all available locked order slots with unique nonces
     for (uint32 i = 0; i < QSB_MAX_LOCKED_ORDERS; ++i)
     {
         increaseEnergy(USER1, amount);
@@ -797,16 +843,22 @@ TEST(ContractTestingQSB, TestLock_FillsAllLockedOrdersThenFailsGracefullyAndRefu
         EXPECT_TRUE(out.success);
     }
 
-    // Next lock should fail with no space and refund the invocationReward
-    const uint32 nonceOverflow = QSB_MAX_LOCKED_ORDERS;
+    // Next lock should still succeed, but the ring buffer will overwrite
+    // one of the older entries. The very first nonce (0) should no longer
+    // be queryable via GetLockedOrder, while the latest nonce should exist.
+    const uint32 oldestNonce = 0;
+    const uint32 newestNonce = QSB_MAX_LOCKED_ORDERS;
+
     increaseEnergy(USER1, amount);
-    long long balanceBefore = getBalance(USER1);
+    QSB::Lock_output overflowOut = test.lock(USER1, amount, relayerFee, 1, newestNonce, ContractTestingQSB::createZeroAddress(), amount);
+    EXPECT_TRUE(overflowOut.success);
 
-    QSB::Lock_output overflowOut = test.lock(USER1, amount, relayerFee, 1, nonceOverflow, ContractTestingQSB::createZeroAddress(), amount);
-    EXPECT_FALSE(overflowOut.success);
+    QSB::GetLockedOrder_output oldest = test.getLockedOrder(oldestNonce);
+    EXPECT_FALSE((bool)oldest.exists);
 
-    long long balanceAfter = getBalance(USER1);
-    EXPECT_EQ(balanceAfter, balanceBefore);
+    QSB::GetLockedOrder_output newest = test.getLockedOrder(newestNonce);
+    EXPECT_TRUE((bool)newest.exists);
+    EXPECT_EQ(newest.order.nonce, newestNonce);
 }
 
 TEST(ContractTestingQSB, TestLock_FailsWhenNonceAlreadyUsedAndRefunds)
@@ -1135,6 +1187,33 @@ TEST(ContractTestingQSB, TestUnlock_FailsWhenContractBalanceTooLow)
     signatures.set(0, test.createMockSignature(ORACLE1));
 
     QSB::Unlock_output output = test.unlock(USER1, order, 1, signatures);
+    EXPECT_FALSE(output.success);
+}
+
+TEST(ContractTestingQSB, TestUnlock_FailsWhenOrderAlreadyFilledBeforeOracleChecks)
+{
+    ContractTestingQSB test;
+
+    // Provide some contract balance via a lock, but the specific lock
+    // is intentionally unrelated to the unlock order in this model.
+    const uint64 amountLocked = 1000000;
+    increaseEnergy(USER1, amountLocked);
+    test.lock(USER1, amountLocked, 0, 1, 500, ContractTestingQSB::createZeroAddress(), amountLocked);
+
+    // Prepare an unlock order and compute its hash
+    const uint64 amount = 100000;
+    const uint64 relayerFee = 1000;
+    QSB::Order order = test.createTestOrder(USER1, USER2, amount, relayerFee, 600);
+    QSB::ComputeOrderHash_output hashOut = test.computeOrderHash(order);
+
+    // Mark this order hash as already filled via the state helper
+    test.getState()->forceMarkOrderFilled(hashOut.hash);
+
+    // Attempt unlock with no oracles and no signatures — Unlock should
+    // still fail with AlreadyFilled before it ever reaches oracle checks.
+    Array<QSB::SignatureData, QSB_MAX_ORACLES> signatures;
+    setMemory(signatures, 0);
+    QSB::Unlock_output output = test.unlock(USER1, order, 0, signatures);
     EXPECT_FALSE(output.success);
 }
 
