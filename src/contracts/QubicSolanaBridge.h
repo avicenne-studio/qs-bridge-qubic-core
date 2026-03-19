@@ -46,7 +46,7 @@ static const uint8 QSBReasonRoleExists = 16;
 static const uint8 QSBReasonRoleMissing = 17;
 static const uint8 QSBReasonInvalidFeeParams = 18;
 static const uint8 QSBReasonTransferFailed = 19;
-// 20, 21 reserved for future use
+static const uint8 QSBReasonInvalidVersion = 20;
 
 struct QSB2
 {
@@ -79,6 +79,7 @@ public:
 		uint32 networkIn;            // incoming network id
 		uint32 networkOut;           // outgoing network id
 		uint32 nonce;                // unique order nonce
+		uint32 oracleVersion;          // replay domain included in signed payload
 	};
 
 	// Compact order-hash representation (K12 digest)
@@ -364,6 +365,7 @@ public:
 		uint32 oracleCount;
 		uint32 pauserCount;
 		uint8 oracleThreshold;
+		uint32 oracleVersion;
 		bit paused;
 	};
 
@@ -483,6 +485,7 @@ protected:
 	Array<LockedOrderEntry, QSB_MAX_LOCKED_ORDERS> lockedOrders;
 	uint32 lastLockedOrdersNextOverwriteIdx;
 	uint32 lastFilledOrdersNextOverwriteIdx;
+	uint32 oracleVersion;
 	uint32 oracleCount;
 	uint32 pauserCount;
 	uint32 bpsFee;               // fee taken in BPS (base 10000) from netAmount
@@ -591,6 +594,12 @@ protected:
 		state.filledOrders.set(i, entry);
 		state.lastFilledOrdersNextOverwriteIdx =
 			(state.lastFilledOrdersNextOverwriteIdx + 1) & (QSB_MAX_FILLED_ORDERS - 1);
+
+		// When the ring buffer wraps, bump the oracle version domain.
+		// This makes any previously signed unlock proofs invalid by the
+		// `input.order.oracleVersion == state.oracleVersion` domain check.
+		if (state.lastFilledOrdersNextOverwriteIdx == 0)
+			++state.oracleVersion;
 	}
 
 	// Check whether an orderHash has already been filled
@@ -717,6 +726,8 @@ public:
 		}
 
 		// Construct a lightweight order object for hashing and event usage
+		// Zero-init to avoid hashing uninitialized padding bytes.
+		setMemory(locals.tmpOrder, 0);
 		locals.tmpOrder.destinationChainId = input.networkOut;
 		locals.tmpOrder.networkIn = 0; // Qubic network id (can be refined off-chain)
 		locals.tmpOrder.networkOut = input.networkOut;
@@ -727,6 +738,7 @@ public:
 		locals.tmpOrder.amount = input.amount;
 		locals.tmpOrder.relayerFee = input.relayerFee;
 		locals.tmpOrder.nonce = input.nonce;
+		locals.tmpOrder.oracleVersion = state.oracleVersion;
 
 		locals.digest = qpi.K12(locals.tmpOrder);
 		digestToOrderHash(locals.digest, output.orderHash);
@@ -825,6 +837,8 @@ public:
 		locals.entry.relayerFee = input.relayerFee;
 
 		// Rebuild order for hashing
+		// Zero-init to avoid hashing uninitialized padding bytes.
+		setMemory(locals.tmpOrder, 0);
 		locals.tmpOrder.destinationChainId = locals.entry.networkOut;
 		locals.tmpOrder.networkIn = 0;
 		locals.tmpOrder.networkOut = locals.entry.networkOut;
@@ -835,6 +849,7 @@ public:
 		locals.tmpOrder.amount = locals.entry.amount;
 		locals.tmpOrder.relayerFee = locals.entry.relayerFee;
 		locals.tmpOrder.nonce = locals.entry.nonce;
+		locals.tmpOrder.oracleVersion = state.oracleVersion;
 
 		locals.digest = qpi.K12(locals.tmpOrder);
 		digestToOrderHash(locals.digest, locals.entry.orderHash);
@@ -863,6 +878,7 @@ public:
 		output.oracleCount = state.oracleCount;
 		output.pauserCount = state.pauserCount;
 		output.oracleThreshold = state.oracleThreshold;
+		output.oracleVersion = state.oracleVersion;
 		output.paused = state.paused;
 	}
 
@@ -1111,6 +1127,14 @@ public:
 			return;
 		}
 
+		// Replay domain check: the signed payload must be bound to current oracle epoch.
+		if (input.order.oracleVersion != state.oracleVersion)
+		{
+			locals.logMsg.reasonCode = QSBReasonInvalidVersion;
+			LOG_INFO(locals.logMsg);
+			return;
+		}
+
 		// NOTE: We intentionally do not require a matching lock() entry here.
 		// Unlock is driven solely by:
 		//  - oracle signatures over the burn/unlock order (on the other chain),
@@ -1133,6 +1157,10 @@ public:
 			LOG_INFO(locals.logMsg);
 			return;
 		}
+
+		// Replay protection is handled by:
+		//  - `input.order.oracleVersion == state.oracleVersion` domain check, and
+		//  - the filledOrders ring-buffer idempotent mark.
 
 		// Verify oracle signatures against threshold
 		if (state.oracleCount == 0 || input.numSignatures == 0)
@@ -1825,6 +1853,7 @@ public:
 		state.oracleThreshold                   = 67; // default 67% (2/3 + 1 style)
 		state.lastLockedOrdersNextOverwriteIdx  = 0;
 		state.lastFilledOrdersNextOverwriteIdx  = 0;
+		state.oracleVersion                       = 0;
 		state.oracleCount                       = 0;
 		state.pauserCount                       = 0;
 

@@ -16,6 +16,11 @@ static const id ORACLE_FEE_RECIPIENT(2500, 2600, 2700, 2800);
 class StateCheckerQSB : public QSB
 {
 public:
+    uint32 getOracleVersion() const
+    {
+        return this->oracleVersion;
+    }
+
     void checkAdmin(const id& expectedAdmin) const
     {
         EXPECT_EQ(this->admin, expectedAdmin);
@@ -102,6 +107,8 @@ public:
         uint32 nonce) const
     {
         QSB::Order order;
+        // Zero-init to keep hashing deterministic (avoid uninitialized padding).
+        setMemory(order, 0);
         order.fromAddress = fromAddress;
         order.toAddress = toAddress;
         order.tokenIn = 0;
@@ -112,6 +119,7 @@ public:
         order.networkIn = 0; // Qubic
         order.networkOut = 1; // Solana
         order.nonce = nonce;
+        order.oracleVersion = this->getState()->getOracleVersion();
         return order;
     }
 
@@ -171,6 +179,8 @@ public:
         QSB::Unlock_input input;
         QSB::Unlock_output output;
         
+        // qpi.K12 hashes raw memory bytes (including padding), so ensure padding is deterministic.
+        setMemory(input.order, 0);
         input.order = order;
         input.numSignatures = numSignatures;
         copyMemory(input.signatures, signatures);
@@ -324,6 +334,8 @@ public:
     {
         QSB::ComputeOrderHash_input input;
         QSB::ComputeOrderHash_output output;
+        // qpi.K12 hashes raw memory bytes (including padding), so padding must be deterministic.
+        setMemory(input.order, 0);
         input.order = order;
         callFunction(QSB_CONTRACT_INDEX, 6, input, output);
         return output;
@@ -546,11 +558,6 @@ TEST(ContractTestingQSB, TestComputeOrderHash_MatchesLockOutput)
 
     // Create order matching what Lock hashes (fromAddress=invocator, toAddress=NULL_ID, amount, relayerFee, networkOut, nonce)
     QSB::Order order = test.createTestOrder(USER1, NULL_ID, amount, relayerFee, nonce);
-    order.networkIn = 0;
-    order.networkOut = 1;
-    order.destinationChainId = 1;
-    order.tokenIn = 0;
-    order.tokenOut = 0;
 
     QSB::ComputeOrderHash_output computed = test.computeOrderHash(order);
     for (uint32 i = 0; i < lockOut.orderHash.capacity(); ++i)
@@ -665,12 +672,14 @@ TEST(ContractTestingQSB, TestGetFilledOrders_ReturnsEmptyWhenNoFills)
     EXPECT_EQ(out.returned, 0u);
 }
 
-TEST(ContractTestingQSB, TestFilledOrders_RingBufferOverwritesOldEntries)
+TEST(ContractTestingQSB, TestFilledOrders_RingBufferOverwritesAndBumpsOracleVersion)
 {
     ContractTestingQSB test;
 
-    // Artificially mark more orders as filled than the ring capacity
-    // to ensure oldest entries are overwritten while newer ones remain.
+    const uint32 initialVersion = test.getState()->getOracleVersion();
+
+    // Artificially mark more orders as filled than the ring buffer capacity.
+    // This should overwrite old entries after wrap, and bump oracle version.
     for (uint32 i = 0; i < QSB_MAX_FILLED_ORDERS + 1; ++i)
     {
         QSB::OrderHash hash;
@@ -682,20 +691,23 @@ TEST(ContractTestingQSB, TestFilledOrders_RingBufferOverwritesOldEntries)
         test.getState()->forceMarkOrderFilled(hash);
     }
 
-    // Hash for 0 should have been overwritten (only last QSB_MAX_FILLED_ORDERS kept)
+    // Exactly one wrap happened => oracle version must increment by 1.
+    EXPECT_EQ(test.getState()->getOracleVersion(), initialVersion + 1);
+
+	// Hash for 0 should have been overwritten.
     QSB::OrderHash hash0;
     setMemory(hash0, 0);
     hash0.set(1, 0);
     QSB::IsOrderFilled_output out0 = test.isOrderFilled(hash0);
-    EXPECT_FALSE((bool)out0.filled);
+	EXPECT_FALSE((bool)out0.filled);
 
-    // Hash for the last inserted nonce (QSB_MAX_FILLED_ORDERS) should be present
+	// Hash for the last inserted (QSB_MAX_FILLED_ORDERS) should be present.
     QSB::OrderHash hashLast;
     setMemory(hashLast, 0);
     hashLast.set(0, (uint8)(QSB_MAX_FILLED_ORDERS & 0xff));
     hashLast.set(1, (uint8)((QSB_MAX_FILLED_ORDERS >> 8) & 0xff));
     QSB::IsOrderFilled_output outLast = test.isOrderFilled(hashLast);
-    EXPECT_TRUE((bool)outLast.filled);
+	EXPECT_TRUE((bool)outLast.filled);
 }
 
 // ============================================================================
